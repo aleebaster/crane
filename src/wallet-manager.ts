@@ -15,8 +15,6 @@ import {
   addSession,
   addCycle,
   addRequest,
-  getAverageCloudflareDuration,
-  getAverageRequestDuration,
   maskAddress,
 } from './history';
 import { calculateNextRequestTime, waitWithCountdown, formatDuration } from './scheduler';
@@ -214,41 +212,30 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
 
         const address = config.wallets[i];
 
-        const avgCF = getAverageCloudflareDuration(history);
-        const avgReq = getAverageRequestDuration(history);
-
         log('----------------------------------------');
         log(`Cycle ${cycleNumber} | Wallet ${i + 1}/${config.wallets.length}`);
-        log('Checking whether next request is allowed...');
-
-        if (avgCF !== null) {
-          log(`Previous Cloudflare average: ${Math.round(avgCF / 1000)}s`);
-        }
-        if (avgReq !== null) {
-          log(`Average faucet response: ${Math.round(avgReq / 1000)}s`);
-        }
+        log('Checking Cloudflare verification...');
 
         const waitDecision = calculateNextRequestTime(history);
 
         if (waitDecision.waitMs > 0) {
-          log(`Calculated wait: ${formatDuration(waitDecision.waitMs)}`);
+          log(`Calculated next request wait: ${Math.round(waitDecision.waitMs / 1000)} seconds`);
           log(`Reason: ${waitDecision.reason}`);
-          if (waitDecision.nextAllowedAt) {
-            log(`Next allowed request: ${waitDecision.nextAllowedAt.toISOString()}`);
-          }
-          log('----------------------------------------');
-
-          await waitWithCountdown(waitDecision.waitMs, waitDecision.reason);
         } else {
-          log('Next request is allowed now');
-          log('----------------------------------------');
+          log('Calculated next request wait: 0 seconds');
+        }
+
+        log('----------------------------------------');
+
+        if (waitDecision.waitMs > 0) {
+          await waitWithCountdown(waitDecision.waitMs, waitDecision.reason);
         }
 
         if (shouldStop) break;
 
         const cfResult = await checkCloudflareTurnstile(page);
         if (!cfResult.verified) {
-          log('Cloudflare verification not complete, waiting for user...');
+          log('Waiting for Cloudflare verification...');
           const maxWait = 300_000;
           const waitStart = Date.now();
           while (Date.now() - waitStart < maxWait) {
@@ -263,6 +250,8 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
         if (i > 0) {
           await resetForNextWallet(page);
         }
+
+        log('Submitting wallet...');
 
         const result = await processWallet(
           page,

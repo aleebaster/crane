@@ -12,7 +12,7 @@ export interface CloudflareVerificationResult {
 export async function checkCloudflareTurnstile(page: Page): Promise<CloudflareVerificationResult> {
   const startTime = Date.now();
 
-  log('Checking Cloudflare verification before request...');
+  log('Checking Cloudflare verification...');
 
   const analysis = await page.evaluate(() => {
     const result = {
@@ -23,7 +23,6 @@ export async function checkCloudflareTurnstile(page: Page): Promise<CloudflareVe
       cloudflareIframeCount: 0,
       hasSuccessText: false,
       successText: '',
-      bodyText: '',
     };
 
     const cftsWidget = document.getElementById('cftsWidget');
@@ -44,7 +43,6 @@ export async function checkCloudflareTurnstile(page: Page): Promise<CloudflareVe
     }).length;
 
     const bodyText = document.body.innerText || '';
-    result.bodyText = bodyText.substring(0, 500);
 
     if (/успіх|success|verified|completed/i.test(bodyText)) {
       result.hasSuccessText = true;
@@ -57,14 +55,11 @@ export async function checkCloudflareTurnstile(page: Page): Promise<CloudflareVe
     return result;
   });
 
-  log(`Total frames: ${analysis.iframeCount}`);
-  log(`Cloudflare-related frames: ${analysis.cloudflareIframeCount}`);
   log(`#cftsWidget: ${analysis.cftsWidget ? 'FOUND' : 'NOT FOUND'}`);
-  log(`Cloudflare text: ${analysis.hasSuccessText ? 'FOUND' : 'NOT FOUND'}`);
-  log(`Success text: ${analysis.successText || 'none'}`);
+  log(`Turnstile token: ${analysis.tokenInput && analysis.tokenValue.length > 10 ? 'PRESENT' : 'EMPTY'}`);
 
   if (!analysis.cftsWidget && !analysis.tokenInput) {
-    log('Final state: NOT_PRESENT');
+    log('Cloudflare state: NOT_PRESENT');
     return {
       verified: true,
       reason: 'No Cloudflare widget present',
@@ -74,12 +69,10 @@ export async function checkCloudflareTurnstile(page: Page): Promise<CloudflareVe
     };
   }
 
-  log('Cloudflare widget detected');
-
   if (analysis.tokenInput && analysis.tokenValue.length > 10) {
-    log('Current verification state: VERIFIED');
-    log('Token is present and non-empty');
+    log('Cloudflare state: VERIFIED');
     if (analysis.hasSuccessText) {
+      log(`Green checkmark detected`);
       log(`Success text detected: ${analysis.successText}`);
     }
     return {
@@ -91,7 +84,7 @@ export async function checkCloudflareTurnstile(page: Page): Promise<CloudflareVe
     };
   }
 
-  log('Current verification state: UNVERIFIED');
+  log('Cloudflare state: UNVERIFIED');
   log('Waiting for verification to complete...');
 
   const maxWait = 300_000;
@@ -121,10 +114,10 @@ export async function checkCloudflareTurnstile(page: Page): Promise<CloudflareVe
 
     if (currentState.verified) {
       log('Cloudflare verification confirmed');
+      log('Current verification state: VERIFIED');
       if (currentState.hasSuccessText) {
         log(`Success text detected: ${currentState.successText}`);
       }
-      log('Current verification state: VERIFIED');
       return {
         verified: true,
         reason: 'Verification completed',
