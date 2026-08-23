@@ -24,6 +24,7 @@ import {
   parseErrorForNextAllowed,
   waitWithCountdown,
   formatDuration,
+  WaitDecision,
 } from './scheduler';
 
 export const MAX_WALLETS = 50;
@@ -234,7 +235,12 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
           log('Last request: none');
         }
 
-        log(`Current cooldown: ${Math.round(waitDecision.currentCooldownMs / 1000)} seconds`);
+        if (waitDecision.faucetResponseMs !== null) {
+          log(`Faucet response time: ${waitDecision.faucetResponseMs}ms`);
+        }
+
+        log(`Faucet cooldown: ${Math.round(waitDecision.currentCooldownMs / 1000)} seconds`);
+        log(`Cooldown source: ${waitDecision.cooldownSource}`);
 
         if (waitDecision.waitMs > 0) {
           log(`Remaining wait: ${Math.round(waitDecision.waitMs / 1000)} seconds`);
@@ -302,7 +308,7 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
           }
           if (rateLimitInfo?.isRateLimit) {
             const adaptiveCooldown = calculateAdaptiveCooldown(history);
-            log(`Increasing cooldown from ${Math.round(waitDecision.currentCooldownMs / 1000)}s to ${Math.round(adaptiveCooldown / 1000)}s`);
+            log(`Increasing cooldown from ${Math.round(waitDecision.currentCooldownMs / 1000)}s to ${Math.round(adaptiveCooldown.cooldownMs / 1000)}s`);
           }
           if (nextAllowedAt) {
             log(`Next allowed request at: ${nextAllowedAt.toISOString()}`);

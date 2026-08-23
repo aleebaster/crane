@@ -286,15 +286,19 @@ describe('Scheduler', () => {
   });
 
   it('should calculate adaptive cooldown with no history', () => {
-    const cooldown = calculateAdaptiveCooldown(emptyHistory());
-    expect(cooldown).toBe(5000);
+    const result = calculateAdaptiveCooldown(emptyHistory());
+    expect(result.cooldownMs).toBe(5000);
+    expect(result.source).toBe('BASELINE');
+    expect(result.faucetResponseMs).toBeNull();
+    expect(result.faucetCooldownMs).toBeNull();
   });
 
   it('should calculate adaptive cooldown after errors', () => {
     const history = emptyHistory();
     addRequest(history, makeRequest({ result: 'ERROR', errorText: 'Error: 429' }));
-    const cooldown = calculateAdaptiveCooldown(history);
-    expect(cooldown).toBeGreaterThan(5000);
+    const result = calculateAdaptiveCooldown(history);
+    expect(result.cooldownMs).toBeGreaterThan(5000);
+    expect(result.source).toBe('ADAPTIVE_BACKOFF');
   });
 
   it('should calculate adaptive cooldown after consecutive successes', () => {
@@ -306,8 +310,9 @@ describe('Scheduler', () => {
         resultAt: new Date(Date.now() - (6 - i) * 1000).toISOString(),
       }));
     }
-    const cooldown = calculateAdaptiveCooldown(history);
-    expect(cooldown).toBeLessThanOrEqual(5000);
+    const result = calculateAdaptiveCooldown(history);
+    expect(result.cooldownMs).toBe(5000);
+    expect(result.source).toBe('BASELINE');
   });
 
   it('should format duration correctly', () => {

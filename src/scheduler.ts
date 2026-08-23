@@ -3,7 +3,6 @@ import {
   HistoryData,
   RequestRecord,
   getRecentRequests,
-  getLastSuccessfulRequest,
   getLastRequest,
 } from './history';
 
@@ -13,7 +12,12 @@ export interface WaitDecision {
   nextAllowedAt: Date | null;
   confidence: 'high' | 'medium' | 'low' | 'none';
   currentCooldownMs: number;
+  cooldownSource: 'FAUCET_RULE' | 'RATE_LIMIT' | 'ADAPTIVE_BACKOFF' | 'BASELINE';
+  faucetResponseMs: number | null;
+  faucetCooldownMs: number | null;
 }
+
+export type CooldownSource = 'FAUCET_RULE' | 'RATE_LIMIT' | 'ADAPTIVE_BACKOFF' | 'BASELINE';
 
 const RATE_LIMIT_PATTERNS = [
   /rate.?limit/i,
@@ -35,11 +39,9 @@ const WAIT_TIME_PATTERNS = [
 ] as const;
 
 const BASE_COOLDOWN_MS = 5000;
-const MIN_COOLDOWN_MS = 2000;
 const MAX_COOLDOWN_MS = 300000;
 const BACKOFF_MULTIPLIER = 1.5;
-const SUCCESS_REDUCTION_FACTOR = 0.9;
-const CONSECUTIVE_SUCCESS_THRESHOLD = 5;
+const RECOVERY_FACTOR = 0.8;
 
 export function parseRateLimitMessage(errorText: string): { isRateLimit: boolean; waitSeconds: number | null } {
   const isRateLimit = RATE_LIMIT_PATTERNS.some(p => p.test(errorText));
@@ -62,67 +64,129 @@ export function parseRateLimitMessage(errorText: string): { isRateLimit: boolean
   return { isRateLimit: true, waitSeconds: null };
 }
 
-export function calculateAdaptiveCooldown(history: HistoryData): number {
+export function calculateAdaptiveCooldown(history: HistoryData): {
+  cooldownMs: number;
+  source: CooldownSource;
+  faucetResponseMs: number | null;
+  faucetCooldownMs: number | null;
+} {
   const recent = getRecentRequests(history, 20);
 
   if (recent.length === 0) {
-    return BASE_COOLDOWN_MS;
-  }
-
-  let consecutiveSuccesses = 0;
-  let consecutiveErrors = 0;
-  let lastErrorIndex = -1;
-
-  for (let i = recent.length - 1; i >= 0; i--) {
-    if (recent[i].result === 'COMPLETED') {
-      if (consecutiveErrors === 0) {
-        consecutiveSuccesses++;
-      }
-    } else if (recent[i].result === 'ERROR') {
-      if (consecutiveSuccesses === 0) {
-        consecutiveErrors++;
-        lastErrorIndex = i;
-      }
-    }
+    return {
+      cooldownMs: BASE_COOLDOWN_MS,
+      source: 'BASELINE',
+      faucetResponseMs: null,
+      faucetCooldownMs: null,
+    };
   }
 
   const lastRequest = recent[recent.length - 1];
-  let cooldownMs = BASE_COOLDOWN_MS;
+  const lastSubmitAt = lastRequest.submitAt ? new Date(lastRequest.submitAt).getTime() : null;
+  const lastResultAt = lastRequest.resultAt ? new Date(lastRequest.resultAt).getTime() : null;
+  const faucetResponseMs = lastSubmitAt && lastResultAt ? lastResultAt - lastSubmitAt : null;
+
+  if (lastRequest.nextAllowedAt) {
+    const nextAllowed = new Date(lastRequest.nextAllowedAt).getTime();
+    const now = Date.now();
+    if (nextAllowed > now) {
+      return {
+        cooldownMs: nextAllowed - (lastResultAt || now),
+        source: 'FAUCET_RULE',
+        faucetResponseMs,
+        faucetCooldownMs: nextAllowed - (lastResultAt || now),
+      };
+    }
+  }
 
   if (lastRequest.result === 'ERROR') {
-    const errorRecord = lastRequest;
-    const rateLimitInfo = errorRecord.errorText
-      ? parseRateLimitMessage(errorRecord.errorText)
+    const rateLimitInfo = lastRequest.errorText
+      ? parseRateLimitMessage(lastRequest.errorText)
       : { isRateLimit: false, waitSeconds: null };
 
     if (rateLimitInfo.isRateLimit && rateLimitInfo.waitSeconds) {
-      cooldownMs = rateLimitInfo.waitSeconds * 1000;
-      log(`Rate limit detected, using specified wait: ${rateLimitInfo.waitSeconds}s`);
-    } else if (consecutiveErrors > 0) {
-      cooldownMs = Math.min(
+      return {
+        cooldownMs: rateLimitInfo.waitSeconds * 1000,
+        source: 'RATE_LIMIT',
+        faucetResponseMs,
+        faucetCooldownMs: rateLimitInfo.waitSeconds * 1000,
+      };
+    }
+
+    let consecutiveErrors = 0;
+    for (let i = recent.length - 1; i >= 0; i--) {
+      if (recent[i].result === 'ERROR') {
+        consecutiveErrors++;
+      } else {
+        break;
+      }
+    }
+
+    if (consecutiveErrors > 0) {
+      const backoffMs = Math.min(
         BASE_COOLDOWN_MS * Math.pow(BACKOFF_MULTIPLIER, consecutiveErrors),
         MAX_COOLDOWN_MS
       );
-      log(`Consecutive errors: ${consecutiveErrors}, cooldown: ${Math.round(cooldownMs / 1000)}s`);
+      return {
+        cooldownMs: backoffMs,
+        source: 'ADAPTIVE_BACKOFF',
+        faucetResponseMs,
+        faucetCooldownMs: null,
+      };
     }
-  } else if (lastRequest.result === 'COMPLETED') {
-    if (consecutiveSuccesses >= CONSECUTIVE_SUCCESS_THRESHOLD) {
-      cooldownMs = Math.max(
-        MIN_COOLDOWN_MS,
-        BASE_COOLDOWN_MS * Math.pow(SUCCESS_REDUCTION_FACTOR, consecutiveSuccesses - CONSECUTIVE_SUCCESS_THRESHOLD)
+  }
+
+  if (lastRequest.result === 'COMPLETED') {
+    let consecutiveSuccesses = 0;
+    for (let i = recent.length - 1; i >= 0; i--) {
+      if (recent[i].result === 'COMPLETED') {
+        consecutiveSuccesses++;
+      } else {
+        break;
+      }
+    }
+
+    let lastBackoffMs = BASE_COOLDOWN_MS;
+    for (let i = recent.length - 1; i >= 0; i--) {
+      if (recent[i].result === 'ERROR') {
+        const errorText = recent[i].errorText;
+        const rateLimitInfo = errorText
+          ? parseRateLimitMessage(errorText)
+          : { isRateLimit: false, waitSeconds: null };
+
+        if (rateLimitInfo.isRateLimit && rateLimitInfo.waitSeconds) {
+          lastBackoffMs = rateLimitInfo.waitSeconds * 1000;
+        } else {
+          const errorIndex = recent.length - 1 - i;
+          lastBackoffMs = Math.min(
+            BASE_COOLDOWN_MS * Math.pow(BACKOFF_MULTIPLIER, errorIndex + 1),
+            MAX_COOLDOWN_MS
+          );
+        }
+        break;
+      }
+    }
+
+    if (lastBackoffMs > BASE_COOLDOWN_MS) {
+      const recoveredMs = Math.max(
+        BASE_COOLDOWN_MS,
+        lastBackoffMs * Math.pow(RECOVERY_FACTOR, consecutiveSuccesses)
       );
-      log(`Consecutive successes: ${consecutiveSuccesses}, reduced cooldown: ${Math.round(cooldownMs / 1000)}s`);
-    } else {
-      cooldownMs = BASE_COOLDOWN_MS;
+      return {
+        cooldownMs: recoveredMs,
+        source: 'ADAPTIVE_BACKOFF',
+        faucetResponseMs,
+        faucetCooldownMs: null,
+      };
     }
   }
 
-  const lastAllowedAt = lastRequest.nextAllowedAt ? new Date(lastRequest.nextAllowedAt) : null;
-  if (lastAllowedAt && lastAllowedAt.getTime() > Date.now()) {
-    cooldownMs = Math.max(cooldownMs, lastAllowedAt.getTime() - Date.now());
-  }
-
-  return Math.min(Math.max(cooldownMs, MIN_COOLDOWN_MS), MAX_COOLDOWN_MS);
+  return {
+    cooldownMs: BASE_COOLDOWN_MS,
+    source: 'BASELINE',
+    faucetResponseMs,
+    faucetCooldownMs: null,
+  };
 }
 
 export function calculateNextRequestTime(history: HistoryData): WaitDecision {
@@ -136,11 +200,13 @@ export function calculateNextRequestTime(history: HistoryData): WaitDecision {
       nextAllowedAt: null,
       confidence: 'none',
       currentCooldownMs: BASE_COOLDOWN_MS,
+      cooldownSource: 'BASELINE',
+      faucetResponseMs: null,
+      faucetCooldownMs: null,
     };
   }
 
-  const lastSubmitAt = lastRequest.submitAt ? new Date(lastRequest.submitAt) : null;
-  const lastResultAt = lastRequest.resultAt ? new Date(lastRequest.resultAt) : null;
+  const lastResultAt = lastRequest.resultAt ? new Date(lastRequest.resultAt).getTime() : null;
 
   const lastAllowedAt = lastRequest.nextAllowedAt ? new Date(lastRequest.nextAllowedAt) : null;
   if (lastAllowedAt && lastAllowedAt.getTime() > now.getTime()) {
@@ -150,32 +216,41 @@ export function calculateNextRequestTime(history: HistoryData): WaitDecision {
       reason: `Site indicates next allowed request at ${lastAllowedAt.toISOString()}`,
       nextAllowedAt: lastAllowedAt,
       confidence: 'high',
-      currentCooldownMs: lastAllowedAt.getTime() - (lastResultAt?.getTime() || now.getTime()),
+      currentCooldownMs: lastAllowedAt.getTime() - (lastResultAt || now.getTime()),
+      cooldownSource: 'FAUCET_RULE',
+      faucetResponseMs: lastRequest.requestDurationMs,
+      faucetCooldownMs: lastAllowedAt.getTime() - (lastResultAt || now.getTime()),
     };
   }
 
-  const adaptiveCooldown = calculateAdaptiveCooldown(history);
-  const timeSinceLastRequest = lastResultAt ? now.getTime() - lastResultAt.getTime() : Infinity;
+  const adaptive = calculateAdaptiveCooldown(history);
+  const timeSinceLastRequest = lastResultAt ? now.getTime() - lastResultAt : Infinity;
 
-  if (timeSinceLastRequest >= adaptiveCooldown) {
+  if (timeSinceLastRequest >= adaptive.cooldownMs) {
     return {
       waitMs: 0,
-      reason: `Cooldown expired (${Math.round(adaptiveCooldown / 1000)}s)`,
+      reason: `Cooldown expired (${Math.round(adaptive.cooldownMs / 1000)}s)`,
       nextAllowedAt: null,
       confidence: 'medium',
-      currentCooldownMs: adaptiveCooldown,
+      currentCooldownMs: adaptive.cooldownMs,
+      cooldownSource: adaptive.source,
+      faucetResponseMs: adaptive.faucetResponseMs,
+      faucetCooldownMs: adaptive.faucetCooldownMs,
     };
   }
 
-  const waitMs = adaptiveCooldown - timeSinceLastRequest;
+  const waitMs = adaptive.cooldownMs - timeSinceLastRequest;
   const nextAllowed = new Date(now.getTime() + waitMs);
 
   return {
     waitMs,
-    reason: `Adaptive cooldown: ${Math.round(adaptiveCooldown / 1000)}s (elapsed: ${Math.round(timeSinceLastRequest / 1000)}s)`,
+    reason: `Adaptive cooldown: ${Math.round(adaptive.cooldownMs / 1000)}s (elapsed: ${Math.round(timeSinceLastRequest / 1000)}s)`,
     nextAllowedAt: nextAllowed,
     confidence: 'medium',
-    currentCooldownMs: adaptiveCooldown,
+    currentCooldownMs: adaptive.cooldownMs,
+    cooldownSource: adaptive.source,
+    faucetResponseMs: adaptive.faucetResponseMs,
+    faucetCooldownMs: adaptive.faucetCooldownMs,
   };
 }
 
