@@ -3,6 +3,7 @@ import { log, logError } from './logger';
 import { BrowserConfig, launchBrowser } from './browser';
 import { FaucetConfig, processWallet, resetForNextWallet, isValidSignetAddress } from './faucet';
 import { WalletResult } from './faucet';
+import { checkCloudflareTurnstile, CloudflareVerificationResult } from './cloudflare';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -245,6 +246,20 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
 
         if (shouldStop) break;
 
+        const cfResult = await checkCloudflareTurnstile(page);
+        if (!cfResult.verified) {
+          log('Cloudflare verification not complete, waiting for user...');
+          const maxWait = 300_000;
+          const waitStart = Date.now();
+          while (Date.now() - waitStart < maxWait) {
+            const recheck = await checkCloudflareTurnstile(page);
+            if (recheck.verified) {
+              break;
+            }
+            await page.waitForTimeout(2000);
+          }
+        }
+
         if (i > 0) {
           await resetForNextWallet(page);
         }
@@ -267,7 +282,7 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
           startedAt: result.startedAt.toISOString(),
           cloudflareDetectedAt: null,
           cloudflarePassedAt: null,
-          cloudflareDurationMs: null,
+          cloudflareDurationMs: cfResult.durationMs,
           submitAt: result.submitAt?.toISOString() || null,
           resultAt: result.resultAt?.toISOString() || null,
           requestDurationMs: result.requestDurationMs,
