@@ -1,0 +1,16 @@
+{
+  "wallets": [
+    "tb1pexampleaddress1",
+    "tb1pexampleaddress2",
+    "tb1pexampleaddress3"
+  ],
+  "browser": {
+    "userDataDir": "C:\\Users\\andre\\AppData\\Local\\Google\\Chrome\\User Data",
+    "profileDirectory": "Profile 2",
+    "headless": false
+  },
+  "faucet": {
+    "url": "https://signet257.bublina.eu.org/",
+    "walletTimeoutMs": 300000
+  }
+}
