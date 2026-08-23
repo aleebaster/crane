@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { detectPageState, PageFaucetState, WalletState } from '../src/state-detector';
+import { loadConfig, MAX_WALLETS } from '../src/wallet-manager';
 
 function makeDocument(errDiv: any, sendButton?: any) {
   return {
@@ -225,17 +226,66 @@ describe('Edge cases for state detection', () => {
   });
 });
 
-describe('Single wallet scenario', () => {
-  it('should process a single wallet address', () => {
-    const wallets = ['tb1pexampleaddress'];
-    expect(wallets.length).toBe(1);
-    expect(wallets[0]).toBeTruthy();
-  });
-});
+describe('Wallet limit validation', () => {
+  const validAddress = 'tb1plk37agr9yx22q0z2v7d2u4szz0zxye0watw48ders4e6q627f2qsrr566r';
+  const tmpDir = require('os').tmpdir();
 
-describe('Multiple wallets scenario', () => {
-  it('should handle up to 10 wallets', () => {
-    const wallets = Array.from({ length: 10 }, (_, i) => `tb1p${i}`);
-    expect(wallets.length).toBe(10);
+  function makeConfigPath(count: number): string {
+    const wallets = Array.from({ length: count }, () => validAddress);
+    const config = {
+      wallets,
+      browser: { userDataDir: '/tmp', profileDirectory: 'Profile 2', headless: false },
+      faucet: { url: 'https://example.com', walletTimeoutMs: 60000 },
+    };
+    const fs = require('fs');
+    const path = require('path');
+    const filePath = path.join(tmpDir, `crane-test-config-${count}.json`);
+    fs.writeFileSync(filePath, JSON.stringify(config), 'utf-8');
+    return filePath;
+  }
+
+  it('should accept 1 wallet', () => {
+    const configPath = makeConfigPath(1);
+    const config = loadConfig(configPath);
+    expect(config.wallets.length).toBe(1);
+  });
+
+  it('should accept 10 wallets', () => {
+    const configPath = makeConfigPath(10);
+    const config = loadConfig(configPath);
+    expect(config.wallets.length).toBe(10);
+  });
+
+  it('should accept 49 wallets', () => {
+    const configPath = makeConfigPath(49);
+    const config = loadConfig(configPath);
+    expect(config.wallets.length).toBe(49);
+  });
+
+  it('should accept 50 wallets', () => {
+    const configPath = makeConfigPath(50);
+    const config = loadConfig(configPath);
+    expect(config.wallets.length).toBe(50);
+  });
+
+  it('should reject 51 wallets', () => {
+    const configPath = makeConfigPath(51);
+    expect(() => loadConfig(configPath)).toThrow(`Maximum ${MAX_WALLETS} wallets supported`);
+  });
+
+  it('should reject empty wallets array', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const filePath = path.join(tmpDir, 'crane-test-config-empty.json');
+    fs.writeFileSync(filePath, JSON.stringify({
+      wallets: [],
+      browser: { userDataDir: '/tmp', profileDirectory: 'Profile 2', headless: false },
+      faucet: { url: 'https://example.com', walletTimeoutMs: 60000 },
+    }), 'utf-8');
+    expect(() => loadConfig(filePath)).toThrow('non-empty');
+  });
+
+  it('should have MAX_WALLETS set to 50', () => {
+    expect(MAX_WALLETS).toBe(50);
   });
 });

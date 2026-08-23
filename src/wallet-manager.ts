@@ -6,35 +6,53 @@ import { WalletResult } from './faucet';
 import * as fs from 'fs';
 import * as path from 'path';
 
+export const MAX_WALLETS = 50;
+
 export interface Config {
   wallets: string[];
   browser: BrowserConfig;
   faucet: FaucetConfig;
 }
 
-function loadConfig(configPath: string): Config {
-  let raw: string;
+const DEFAULT_CONFIG: Config = {
+  wallets: [],
+  browser: {
+    userDataDir: 'C:\\Users\\andre\\AppData\\Local\\Google\\Chrome\\User Data',
+    profileDirectory: 'Profile 2',
+    headless: false,
+  },
+  faucet: {
+    url: 'https://signet257.bublina.eu.org/',
+    walletTimeoutMs: 300000,
+  },
+};
 
-  if (fs.existsSync(configPath)) {
-    raw = fs.readFileSync(configPath, 'utf-8');
-  } else {
-    const examplePath = path.join(path.dirname(configPath), 'wallets.example.json');
-    if (fs.existsSync(examplePath)) {
-      log(`Config not found at ${configPath}, using example config`);
-      raw = fs.readFileSync(examplePath, 'utf-8');
-    } else {
-      throw new Error(`Config not found: ${configPath}`);
-    }
+function createDefaultConfig(configPath: string): void {
+  const dir = path.dirname(configPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(configPath, JSON.stringify(DEFAULT_CONFIG, null, 2), 'utf-8');
+}
+
+export function loadConfig(configPath: string): Config {
+  if (!fs.existsSync(configPath)) {
+    log(`Config not found at ${configPath}`);
+    createDefaultConfig(configPath);
+    log(`Created default config at ${configPath}`);
+    log('Please edit the config file to add your wallet addresses, then run again.');
+    throw new Error(`Config created at ${configPath}. Please edit it with your wallet addresses and run again.`);
   }
 
+  const raw = fs.readFileSync(configPath, 'utf-8');
   const config = JSON.parse(raw) as Config;
 
   if (!config.wallets || !Array.isArray(config.wallets) || config.wallets.length === 0) {
     throw new Error('Config must contain a non-empty "wallets" array');
   }
 
-  if (config.wallets.length > 10) {
-    throw new Error('Maximum 10 wallets supported');
+  if (config.wallets.length > MAX_WALLETS) {
+    throw new Error(`Maximum ${MAX_WALLETS} wallets supported, got ${config.wallets.length}`);
   }
 
   for (let i = 0; i < config.wallets.length; i++) {
@@ -45,16 +63,8 @@ function loadConfig(configPath: string): Config {
     config.wallets[i] = addr;
   }
 
-  config.browser = config.browser || {
-    userDataDir: 'C:\\Users\\andre\\AppData\\Local\\Google\\Chrome\\User Data',
-    profileDirectory: 'Profile 2',
-    headless: false,
-  };
-
-  config.faucet = config.faucet || {
-    url: 'https://signet257.bublina.eu.org/',
-    walletTimeoutMs: 300000,
-  };
+  config.browser = { ...DEFAULT_CONFIG.browser, ...config.browser };
+  config.faucet = { ...DEFAULT_CONFIG.faucet, ...config.faucet };
 
   if (process.env.CHROME_PATH) {
     config.browser.chromePath = process.env.CHROME_PATH;
