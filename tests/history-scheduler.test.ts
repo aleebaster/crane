@@ -20,6 +20,9 @@ import {
 } from '../src/history';
 import {
   calculateNextRequestTime,
+  calculateAdaptiveCooldown,
+  parseRateLimitMessage,
+  parseErrorForNextAllowed,
   formatDuration,
   formatCountdown,
 } from '../src/scheduler';
@@ -51,6 +54,7 @@ function makeRequest(overrides: Partial<import('../src/history').RequestRecord> 
     result: 'COMPLETED',
     errorText: null,
     nextAllowedAt: null,
+    txid: null,
     ...overrides,
   };
 }
@@ -253,22 +257,57 @@ describe('Scheduler', () => {
     expect(decision.reason).toContain('next allowed request');
   });
 
-  it('should use average cooldown when available', () => {
+  it('should return zero wait when cooldown expired', () => {
+    const pastTime = new Date(Date.now() - 10000).toISOString();
     const history = emptyHistory();
-    addRequest(history, makeRequest({ cooldownDurationMs: 60000 }));
+    addRequest(history, makeRequest({
+      result: 'COMPLETED',
+      resultAt: pastTime,
+      cooldownDurationMs: 5000,
+    }));
     const decision = calculateNextRequestTime(history);
-    expect(decision.waitMs).toBe(60000);
-    expect(decision.confidence).toBe('medium');
-    expect(decision.reason).toContain('Observed cooldown');
+    expect(decision.waitMs).toBe(0);
   });
 
-  it('should use conservative estimate when no cooldown', () => {
+  it('should parse rate limit messages', () => {
+    expect(parseRateLimitMessage('Error: 429 Please slow down')).toEqual({ isRateLimit: true, waitSeconds: null });
+    expect(parseRateLimitMessage('Rate limit exceeded')).toEqual({ isRateLimit: true, waitSeconds: null });
+    expect(parseRateLimitMessage('Too many requests')).toEqual({ isRateLimit: true, waitSeconds: null });
+    expect(parseRateLimitMessage('Wait 30 seconds')).toEqual({ isRateLimit: true, waitSeconds: 30 });
+    expect(parseRateLimitMessage('Try again in 60 seconds')).toEqual({ isRateLimit: true, waitSeconds: 60 });
+    expect(parseRateLimitMessage('Normal success message')).toEqual({ isRateLimit: false, waitSeconds: null });
+  });
+
+  it('should parse error for next allowed time', () => {
+    const result = parseErrorForNextAllowed('Wait 30 seconds');
+    expect(result).not.toBeNull();
+    expect(result!.getTime()).toBeGreaterThan(Date.now());
+    expect(result!.getTime()).toBeLessThanOrEqual(Date.now() + 31000);
+  });
+
+  it('should calculate adaptive cooldown with no history', () => {
+    const cooldown = calculateAdaptiveCooldown(emptyHistory());
+    expect(cooldown).toBe(5000);
+  });
+
+  it('should calculate adaptive cooldown after errors', () => {
     const history = emptyHistory();
-    addRequest(history, makeRequest({ result: 'COMPLETED', requestDurationMs: 10000 }));
-    const decision = calculateNextRequestTime(history);
-    expect(decision.waitMs).toBe(15000);
-    expect(decision.confidence).toBe('low');
-    expect(decision.reason).toContain('Conservative estimate');
+    addRequest(history, makeRequest({ result: 'ERROR', errorText: 'Error: 429' }));
+    const cooldown = calculateAdaptiveCooldown(history);
+    expect(cooldown).toBeGreaterThan(5000);
+  });
+
+  it('should calculate adaptive cooldown after consecutive successes', () => {
+    const history = emptyHistory();
+    for (let i = 0; i < 6; i++) {
+      addRequest(history, makeRequest({
+        walletIndex: i,
+        result: 'COMPLETED',
+        resultAt: new Date(Date.now() - (6 - i) * 1000).toISOString(),
+      }));
+    }
+    const cooldown = calculateAdaptiveCooldown(history);
+    expect(cooldown).toBeLessThanOrEqual(5000);
   });
 
   it('should format duration correctly', () => {

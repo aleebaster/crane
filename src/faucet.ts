@@ -23,6 +23,7 @@ export interface WalletResult {
   cooldownDurationMs: number | null;
   nextAllowedAt: Date | null;
   errorText: string | null;
+  txid: string | null;
 }
 
 const SELECTORS = {
@@ -157,11 +158,16 @@ export async function processWallet(
   let message: string;
   let errorText: string | null = null;
   let nextAllowedAt: Date | null = null;
+  let txid: string | null = null;
 
   switch (result.state) {
     case PageFaucetState.SUCCESS:
       walletState = 'COMPLETED';
       message = result.text;
+      const txidMatch = result.text.match(/([a-fA-F0-9]{64})/);
+      if (txidMatch) {
+        txid = txidMatch[1];
+      }
       break;
     case PageFaucetState.ERROR:
       walletState = 'ERROR';
@@ -194,6 +200,7 @@ export async function processWallet(
     cooldownDurationMs: null,
     nextAllowedAt,
     errorText,
+    txid,
   };
 }
 

@@ -17,6 +17,7 @@ export interface RequestRecord {
   result: 'COMPLETED' | 'ERROR' | 'TIMEOUT';
   errorText: string | null;
   nextAllowedAt: string | null;
+  txid: string | null;
 }
 
 export interface CycleRecord {
@@ -98,6 +99,10 @@ export function getErrorRequests(data: HistoryData): RequestRecord[] {
 export function getLastSuccessfulRequest(data: HistoryData): RequestRecord | null {
   const successful = getSuccessfulRequests(data);
   return successful.length > 0 ? successful[successful.length - 1] : null;
+}
+
+export function getLastRequest(data: HistoryData): RequestRecord | null {
+  return data.requests.length > 0 ? data.requests[data.requests.length - 1] : null;
 }
 
 export function getLastNextAllowedAt(data: HistoryData): Date | null {

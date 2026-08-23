@@ -17,7 +17,14 @@ import {
   addRequest,
   maskAddress,
 } from './history';
-import { calculateNextRequestTime, waitWithCountdown, formatDuration } from './scheduler';
+import {
+  calculateNextRequestTime,
+  calculateAdaptiveCooldown,
+  parseRateLimitMessage,
+  parseErrorForNextAllowed,
+  waitWithCountdown,
+  formatDuration,
+} from './scheduler';
 
 export const MAX_WALLETS = 50;
 
@@ -212,17 +219,29 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
 
         const address = config.wallets[i];
 
-        log('----------------------------------------');
-        log(`Cycle ${cycleNumber} | Wallet ${i + 1}/${config.wallets.length}`);
-        log('Checking Cloudflare verification...');
-
+        const lastRequest = history.requests.length > 0 ? history.requests[history.requests.length - 1] : null;
         const waitDecision = calculateNextRequestTime(history);
 
-        if (waitDecision.waitMs > 0) {
-          log(`Calculated next request wait: ${Math.round(waitDecision.waitMs / 1000)} seconds`);
-          log(`Reason: ${waitDecision.reason}`);
+        log('----------------------------------------');
+        log(`Cycle ${cycleNumber} | Wallet ${i + 1}/${config.wallets.length}`);
+
+        if (lastRequest) {
+          log(`Last request: ${lastRequest.result} at ${lastRequest.resultAt || 'unknown'}`);
+          if (lastRequest.errorText) {
+            log(`Last error: ${lastRequest.errorText}`);
+          }
         } else {
-          log('Calculated next request wait: 0 seconds');
+          log('Last request: none');
+        }
+
+        log(`Current cooldown: ${Math.round(waitDecision.currentCooldownMs / 1000)} seconds`);
+
+        if (waitDecision.waitMs > 0) {
+          log(`Remaining wait: ${Math.round(waitDecision.waitMs / 1000)} seconds`);
+          log(`Wait reason: ${waitDecision.reason}`);
+        } else {
+          log(`Remaining wait: 0 seconds`);
+          log(`Wait reason: ${waitDecision.reason}`);
         }
 
         log('----------------------------------------');
@@ -232,6 +251,8 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
         }
 
         if (shouldStop) break;
+
+        log('Checking Cloudflare verification...');
 
         const cfResult = await checkCloudflareTurnstile(page);
         if (!cfResult.verified) {
@@ -264,6 +285,31 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
 
         cycleResults.push(result);
 
+        const rateLimitInfo = result.errorText ? parseRateLimitMessage(result.errorText) : null;
+        let nextAllowedAt = result.nextAllowedAt;
+        if (result.state === 'ERROR' && result.errorText) {
+          const parsedNextAllowed = parseErrorForNextAllowed(result.errorText);
+          if (parsedNextAllowed) {
+            nextAllowedAt = parsedNextAllowed;
+          }
+        }
+
+        if (result.state === 'ERROR') {
+          log('----------------------------------------');
+          log('Faucet rejected request');
+          if (result.errorText) {
+            log(`Detected reason: ${result.errorText}`);
+          }
+          if (rateLimitInfo?.isRateLimit) {
+            const adaptiveCooldown = calculateAdaptiveCooldown(history);
+            log(`Increasing cooldown from ${Math.round(waitDecision.currentCooldownMs / 1000)}s to ${Math.round(adaptiveCooldown / 1000)}s`);
+          }
+          if (nextAllowedAt) {
+            log(`Next allowed request at: ${nextAllowedAt.toISOString()}`);
+          }
+          log('----------------------------------------');
+        }
+
         const requestRecord: RequestRecord = {
           cycleNumber,
           walletIndex: i,
@@ -275,10 +321,11 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
           submitAt: result.submitAt?.toISOString() || null,
           resultAt: result.resultAt?.toISOString() || null,
           requestDurationMs: result.requestDurationMs,
-          cooldownDurationMs: null,
+          cooldownDurationMs: waitDecision.currentCooldownMs,
           result: result.state,
           errorText: result.errorText,
-          nextAllowedAt: result.nextAllowedAt?.toISOString() || null,
+          nextAllowedAt: nextAllowedAt?.toISOString() || null,
+          txid: result.txid || null,
         };
         addRequest(history, requestRecord);
         saveHistory(history);
