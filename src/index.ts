@@ -5,7 +5,11 @@ import { run } from './wallet-manager';
 
 const configPath = process.argv[2] || 'config/config.json';
 
-run(configPath).catch((error) => {
-  console.error('Unhandled error:', error);
-  process.exit(1);
-});
+run(configPath)
+  .then(() => {
+    process.exit(0);
+  })
+  .catch((error) => {
+    console.error('\nFatal:', error instanceof Error ? error.message : error);
+    process.exit(1);
+  });

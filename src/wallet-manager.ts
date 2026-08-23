@@ -135,7 +135,9 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
     const pages = context.pages();
     page = pages.length > 0 ? pages[0] : await context.newPage();
 
+    log('Opening faucet page...');
     await navigateToPage(page, config.faucet.url);
+    log('Faucet page ready');
 
     for (let i = 0; i < config.wallets.length; i++) {
       const address = config.wallets[i];
@@ -156,6 +158,10 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
     }
   } catch (error) {
     logError('Fatal error', error);
+    if (results.length === 0) {
+      log('Browser startup failed. No wallets were processed.');
+    }
+    throw error;
   } finally {
     if (context) {
       await context.close();
