@@ -1,7 +1,7 @@
 import { BrowserContext, Page } from 'playwright-core';
 import { log, logError } from './logger';
 import { BrowserConfig, launchBrowser } from './browser';
-import { FaucetConfig, processWallet, resetForNextWallet, navigateToPage, isValidSignetAddress } from './faucet';
+import { FaucetConfig, processWallet, resetForNextWallet, isValidSignetAddress } from './faucet';
 import { WalletResult } from './faucet';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -76,6 +76,41 @@ export function loadConfig(configPath: string): Config {
   return config;
 }
 
+async function navigateToFaucet(page: Page, faucetUrl: string): Promise<void> {
+  log(`Navigating to: ${faucetUrl}`);
+  await page.goto(faucetUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: 60000,
+  });
+  log(`Navigation completed`);
+  log(`Current URL: ${page.url()}`);
+
+  if (page.url() === 'about:blank') {
+    throw new Error(
+      'Navigation failed: page is still about:blank\n' +
+      'Wallet processing will not start'
+    );
+  }
+
+  log('Waiting for faucet form...');
+  try {
+    await page.waitForSelector('#address', {
+      state: 'visible',
+      timeout: 300000,
+    });
+    log('Faucet form detected');
+  } catch {
+    log('Faucet form not detected after 5 minutes');
+    log('Checking if Cloudflare verification is needed...');
+    log('Please complete Cloudflare verification manually in the browser');
+    await page.waitForSelector('#address', {
+      state: 'visible',
+      timeout: 300000,
+    });
+    log('Faucet form detected after Cloudflare');
+  }
+}
+
 function printSummary(results: WalletResult[]): void {
   const completed = results.filter((r) => r.state === 'COMPLETED').length;
   const errors = results.filter((r) => r.state === 'ERROR').length;
@@ -127,17 +162,16 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
   log(`Loaded ${config.wallets.length} wallet(s)`);
 
   let context: BrowserContext | null = null;
-  let page: Page | null = null;
   const results: WalletResult[] = [];
 
   try {
-    context = await launchBrowser(config.browser);
-    const pages = context.pages();
-    page = pages.length > 0 ? pages[0] : await context.newPage();
+    const launchResult = await launchBrowser(config.browser);
+    context = launchResult.context;
+    const page = launchResult.page;
 
-    log('Opening faucet page...');
-    await navigateToPage(page, config.faucet.url);
-    log('Faucet page ready');
+    await navigateToFaucet(page, config.faucet.url);
+
+    log('Starting wallet processing');
 
     for (let i = 0; i < config.wallets.length; i++) {
       const address = config.wallets[i];

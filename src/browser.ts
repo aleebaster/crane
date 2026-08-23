@@ -1,5 +1,5 @@
-import { chromium, BrowserContext } from 'playwright-core';
-import { log, logError } from './logger';
+import { chromium, Browser, BrowserContext, Page } from 'playwright-core';
+import { log } from './logger';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
@@ -9,6 +9,12 @@ export interface BrowserConfig {
   profileDirectory: string;
   headless: boolean;
   chromePath?: string;
+}
+
+export interface BrowserLaunchResult {
+  browser: Browser;
+  context: BrowserContext;
+  page: Page;
 }
 
 function findChromePath(): string | undefined {
@@ -38,59 +44,68 @@ function findChromePath(): string | undefined {
   return undefined;
 }
 
-function isChromeRunning(): boolean {
-  try {
-    const platform = process.platform;
-    if (platform === 'win32') {
-      const output = execSync('tasklist /FI "IMAGENAME eq chrome.exe" /NH', {
-        encoding: 'utf-8',
-        timeout: 5000,
-      });
-      return output.toLowerCase().includes('chrome.exe');
-    }
-    if (platform === 'darwin') {
-      const output = execSync('pgrep -x "Google Chrome"', {
-        encoding: 'utf-8',
-        timeout: 5000,
-      });
-      return output.trim().length > 0;
-    }
-    const output = execSync('pgrep -x chrome', {
-      encoding: 'utf-8',
-      timeout: 5000,
-    });
-    return output.trim().length > 0;
-  } catch {
-    return false;
+function validateProfile(userDataDir: string, profileDirectory: string): void {
+  if (!fs.existsSync(userDataDir)) {
+    throw new Error(
+      `Chrome User Data directory not found: ${userDataDir}\n` +
+      `Make sure Google Chrome is installed.`
+    );
   }
-}
 
-function checkLockFiles(userDataDir: string, profileDirectory: string): { locked: boolean; reason: string } {
   const profileDir = path.join(userDataDir, profileDirectory);
-  const lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
-
-  for (const lockFile of lockFiles) {
-    const lockPath = path.join(profileDir, lockFile);
-    if (fs.existsSync(lockPath)) {
-      return {
-        locked: true,
-        reason: `Lock file exists: ${lockPath}`,
-      };
-    }
+  if (!fs.existsSync(profileDir)) {
+    throw new Error(
+      `Chrome profile "${profileDirectory}" not found at: ${profileDir}\n` +
+      `Create this profile in Chrome first: Menu > Profiles > Add Profile`
+    );
   }
-
-  const mainLockPath = path.join(userDataDir, 'SingletonLock');
-  if (fs.existsSync(mainLockPath)) {
-    return {
-      locked: true,
-      reason: `Main lock file exists: ${mainLockPath}`,
-    };
-  }
-
-  return { locked: false, reason: '' };
 }
 
-export async function launchBrowser(config: BrowserConfig): Promise<BrowserContext> {
+function getValidPage(context: BrowserContext): Page {
+  const pages = context.pages();
+  for (const p of pages) {
+    if (!p.isClosed()) {
+      return p;
+    }
+  }
+  return pages[pages.length - 1];
+}
+
+async function waitForCDP(port: number, timeoutMs: number = 15000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/json/version`);
+      if (res.ok) return;
+    } catch {
+      // not ready yet
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  throw new Error(`CDP not ready on port ${port} after ${timeoutMs}ms`);
+}
+
+function launchChromeViaPowerShell(chromePath: string, userDataDir: string, profileDirectory: string, port: number): void {
+  const psScript = `
+Start-Process -FilePath '${chromePath}' -ArgumentList @(
+  '--remote-debugging-port=${port}',
+  '--user-data-dir=${userDataDir}',
+  '--profile-directory=${profileDirectory}',
+  '--no-first-run',
+  '--no-default-browser-check',
+  '--new-window',
+  'about:blank'
+) -PassThru | Out-Null
+`;
+
+  execSync(`powershell -NoProfile -Command "${psScript.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`, {
+    encoding: 'utf-8',
+    timeout: 10000,
+    stdio: 'pipe',
+  });
+}
+
+export async function launchBrowser(config: BrowserConfig): Promise<BrowserLaunchResult> {
   const chromePath = config.chromePath || findChromePath();
   if (!chromePath) {
     throw new Error(
@@ -99,51 +114,30 @@ export async function launchBrowser(config: BrowserConfig): Promise<BrowserConte
   }
 
   log(`Chrome executable: ${chromePath}`);
-  log(`User Data Dir: ${config.userDataDir}`);
-  log(`Profile: ${config.profileDirectory}`);
+  log(`Chrome User Data: ${config.userDataDir}`);
+  log(`Bot Chrome profile: ${config.profileDirectory}`);
+  log('User Default profile will not be used');
 
-  log('Checking whether Chrome is already running...');
-  const chromeRunning = isChromeRunning();
-  if (chromeRunning) {
-    log('Chrome processes detected. Checking profile lock...');
-    const lockCheck = checkLockFiles(config.userDataDir, config.profileDirectory);
-    if (lockCheck.locked) {
-      throw new Error(
-        `Chrome Profile "${config.profileDirectory}" is currently in use.\n` +
-        `Reason: ${lockCheck.reason}\n` +
-        `Close all Google Chrome windows and try again.`
-      );
-    }
-    log('No profile lock found, proceeding with launch...');
-  } else {
-    log('No Chrome processes found');
-  }
+  validateProfile(config.userDataDir, config.profileDirectory);
+
+  const port = 9222 + Math.floor(Math.random() * 1000);
+  log(`Using CDP port: ${port}`);
 
   log('Launching Chrome...');
-  let context: BrowserContext;
-  try {
-    context = await chromium.launchPersistentContext(config.userDataDir, {
-      headless: config.headless,
-      executablePath: chromePath,
-      args: [
-        `--profile-directory=${config.profileDirectory}`,
-      ],
-      viewport: { width: 1280, height: 900 },
-      ignoreDefaultArgs: ['--disable-extensions'],
-    });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `Failed to launch Chrome Profile "${config.profileDirectory}".\n` +
-      `Chrome executable: ${chromePath}\n` +
-      `User Data Dir: ${config.userDataDir}\n` +
-      `Error: ${msg}\n\n` +
-      `Make sure Chrome is fully closed before running the bot.`
-    );
-  }
+  launchChromeViaPowerShell(chromePath, config.userDataDir, config.profileDirectory, port);
 
-  log('Chrome launched successfully');
-  log('Persistent context created');
+  log('Waiting for Chrome CDP...');
+  await waitForCDP(port, 15000);
+  log('Chrome CDP ready');
 
-  return context;
+  log('Connecting via CDP...');
+  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+  log('Connected to Chrome via CDP');
+
+  const context = browser.contexts()[0] || await browser.newContext();
+  const page = getValidPage(context);
+
+  log(`Initial page URL: ${page.url()}`);
+
+  return { browser, context, page };
 }
