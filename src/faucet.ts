@@ -13,6 +13,16 @@ export interface WalletResult {
   message: string;
   startedAt: Date;
   completedAt: Date;
+  cycleNumber: number;
+  cloudflareDetectedAt: Date | null;
+  cloudflarePassedAt: Date | null;
+  cloudflareDurationMs: number | null;
+  submitAt: Date | null;
+  resultAt: Date | null;
+  requestDurationMs: number | null;
+  cooldownDurationMs: number | null;
+  nextAllowedAt: Date | null;
+  errorText: string | null;
 }
 
 const SELECTORS = {
@@ -36,7 +46,10 @@ export async function navigateToPage(page: Page, faucetUrl: string): Promise<voi
   const cloudflareReady = await detectCloudflareState(page);
   if (!cloudflareReady) {
     log('Cloudflare verification detected. Waiting for user to complete...');
+    const cfStart = Date.now();
     await waitForCloudflare(page);
+    const cfDuration = Date.now() - cfStart;
+    log(`Cloudflare verification completed in ${Math.round(cfDuration / 1000)}s`);
   } else {
     log('No Cloudflare challenge or already passed');
   }
@@ -120,15 +133,17 @@ export async function processWallet(
   address: string,
   walletIndex: number,
   totalWallets: number,
-  timeoutMs: number
+  timeoutMs: number,
+  cycleNumber: number
 ): Promise<WalletResult> {
   const startedAt = new Date();
-  const walletLabel = `Wallet ${walletIndex + 1}/${totalWallets}`;
+  const walletLabel = `Cycle ${cycleNumber} | Wallet ${walletIndex + 1}/${totalWallets}`;
 
   log(`${walletLabel}: submitting (${truncateAddress(address)})`);
 
   const beforeSubmitState = await getCurrentPageState(page);
 
+  const submitAt = new Date();
   await submitAddress(page, address);
 
   await page.waitForTimeout(500);
@@ -136,10 +151,12 @@ export async function processWallet(
   log(`${walletLabel}: processing`);
 
   const result = await waitForFinalState(page, timeoutMs);
-  const completedAt = new Date();
+  const resultAt = new Date();
 
   let walletState: 'COMPLETED' | 'ERROR' | 'TIMEOUT';
   let message: string;
+  let errorText: string | null = null;
+  let nextAllowedAt: Date | null = null;
 
   switch (result.state) {
     case PageFaucetState.SUCCESS:
@@ -149,6 +166,7 @@ export async function processWallet(
     case PageFaucetState.ERROR:
       walletState = 'ERROR';
       message = result.text;
+      errorText = result.text;
       break;
     default:
       walletState = 'TIMEOUT';
@@ -156,14 +174,26 @@ export async function processWallet(
       break;
   }
 
-  log(`${walletLabel}: ${walletState} - ${message}`);
+  const requestDurationMs = resultAt.getTime() - submitAt.getTime();
+
+  log(`${walletLabel}: ${walletState} - ${message} (${Math.round(requestDurationMs / 1000)}s)`);
 
   return {
     address,
     state: walletState,
     message,
     startedAt,
-    completedAt,
+    completedAt: resultAt,
+    cycleNumber,
+    cloudflareDetectedAt: null,
+    cloudflarePassedAt: null,
+    cloudflareDurationMs: null,
+    submitAt,
+    resultAt,
+    requestDurationMs,
+    cooldownDurationMs: null,
+    nextAllowedAt,
+    errorText,
   };
 }
 

@@ -1,10 +1,24 @@
-import { BrowserContext, Page } from 'playwright-core';
+import { Browser, BrowserContext, Page } from 'playwright-core';
 import { log, logError } from './logger';
 import { BrowserConfig, launchBrowser } from './browser';
 import { FaucetConfig, processWallet, resetForNextWallet, isValidSignetAddress } from './faucet';
 import { WalletResult } from './faucet';
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  HistoryData,
+  RequestRecord,
+  CycleRecord,
+  loadHistory,
+  saveHistory,
+  addSession,
+  addCycle,
+  addRequest,
+  getAverageCloudflareDuration,
+  getAverageRequestDuration,
+  maskAddress,
+} from './history';
+import { calculateNextRequestTime, waitWithCountdown, formatDuration } from './scheduler';
 
 export const MAX_WALLETS = 50;
 
@@ -111,44 +125,38 @@ async function navigateToFaucet(page: Page, faucetUrl: string): Promise<void> {
   }
 }
 
-function printSummary(results: WalletResult[]): void {
+function printCycleSummary(results: WalletResult[], cycleNumber: number, cycleStartMs: number): void {
   const completed = results.filter((r) => r.state === 'COMPLETED').length;
   const errors = results.filter((r) => r.state === 'ERROR').length;
   const timeouts = results.filter((r) => r.state === 'TIMEOUT').length;
+  const cycleDurationMs = Date.now() - cycleStartMs;
 
-  console.log('\n===== SUMMARY =====');
-  console.log(`\nTotal wallets: ${results.length}`);
-  console.log(`Completed: ${completed}`);
+  console.log('\n========================================');
+  console.log(`Cycle ${cycleNumber} completed`);
+  console.log(`Successful: ${completed}`);
+  console.log(`Errors: ${errors}`);
   console.log(`Timeout: ${timeouts}`);
-  console.log(`Failed: ${errors}\n`);
-
-  results.forEach((r, i) => {
-    const addr = r.address.length > 20
-      ? `${r.address.slice(0, 8)}...${r.address.slice(-8)}`
-      : r.address;
-    const duration = Math.round((r.completedAt.getTime() - r.startedAt.getTime()) / 1000);
-    console.log(`Wallet ${i + 1}: ${r.state} (${duration}s) ${addr}`);
-    if (r.message) {
-      console.log(`  Message: ${r.message}`);
-    }
-  });
-
-  console.log('');
+  console.log(`Cycle duration: ${formatDuration(cycleDurationMs)}`);
+  console.log('========================================\n');
 }
 
-function saveResults(results: WalletResult[], outputPath: string): void {
+function saveResults(results: WalletResult[], outputPath: string, cycleNumber: number): void {
   const dir = path.dirname(outputPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
   const output = results.map((r) => ({
+    cycle: r.cycleNumber,
+    walletIndex: r.address,
     address: r.address,
     state: r.state,
     message: r.message,
     startedAt: r.startedAt.toISOString(),
     completedAt: r.completedAt.toISOString(),
     durationMs: r.completedAt.getTime() - r.startedAt.getTime(),
+    cloudflareDurationMs: r.cloudflareDurationMs,
+    requestDurationMs: r.requestDurationMs,
   }));
 
   fs.writeFileSync(outputPath, JSON.stringify(output, null, 2), 'utf-8');
@@ -161,11 +169,27 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
   const config = loadConfig(configPath);
   log(`Loaded ${config.wallets.length} wallet(s)`);
 
+  const history = loadHistory();
+  addSession(history);
+  saveHistory(history);
+
   let context: BrowserContext | null = null;
-  const results: WalletResult[] = [];
+  let browser: Browser | null = null;
+  let shouldStop = false;
+
+  const shutdownHandler = async () => {
+    log('Shutdown signal received, stopping gracefully...');
+    shouldStop = true;
+    process.removeListener('SIGINT', shutdownHandler);
+    process.removeListener('SIGTERM', shutdownHandler);
+  };
+
+  process.on('SIGINT', shutdownHandler);
+  process.on('SIGTERM', shutdownHandler);
 
   try {
     const launchResult = await launchBrowser(config.browser);
+    browser = launchResult.browser;
     context = launchResult.context;
     const page = launchResult.page;
 
@@ -173,39 +197,135 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
 
     log('Starting wallet processing');
 
-    for (let i = 0; i < config.wallets.length; i++) {
-      const address = config.wallets[i];
+    let cycleNumber = 1;
 
-      if (i > 0) {
-        await resetForNextWallet(page);
+    while (!shouldStop) {
+      const cycleStartMs = Date.now();
+      log('========================================');
+      log(`Starting Cycle ${cycleNumber}`);
+      log(`Wallets: ${config.wallets.length}`);
+      log('========================================');
+
+      const cycleResults: WalletResult[] = [];
+
+      for (let i = 0; i < config.wallets.length; i++) {
+        if (shouldStop) break;
+
+        const address = config.wallets[i];
+
+        const avgCF = getAverageCloudflareDuration(history);
+        const avgReq = getAverageRequestDuration(history);
+
+        log('----------------------------------------');
+        log(`Cycle ${cycleNumber} | Wallet ${i + 1}/${config.wallets.length}`);
+        log('Checking whether next request is allowed...');
+
+        if (avgCF !== null) {
+          log(`Previous Cloudflare average: ${Math.round(avgCF / 1000)}s`);
+        }
+        if (avgReq !== null) {
+          log(`Average faucet response: ${Math.round(avgReq / 1000)}s`);
+        }
+
+        const waitDecision = calculateNextRequestTime(history);
+
+        if (waitDecision.waitMs > 0) {
+          log(`Calculated wait: ${formatDuration(waitDecision.waitMs)}`);
+          log(`Reason: ${waitDecision.reason}`);
+          if (waitDecision.nextAllowedAt) {
+            log(`Next allowed request: ${waitDecision.nextAllowedAt.toISOString()}`);
+          }
+          log('----------------------------------------');
+
+          await waitWithCountdown(waitDecision.waitMs, waitDecision.reason);
+        } else {
+          log('Next request is allowed now');
+          log('----------------------------------------');
+        }
+
+        if (shouldStop) break;
+
+        if (i > 0) {
+          await resetForNextWallet(page);
+        }
+
+        const result = await processWallet(
+          page,
+          address,
+          i,
+          config.wallets.length,
+          config.faucet.walletTimeoutMs,
+          cycleNumber
+        );
+
+        cycleResults.push(result);
+
+        const requestRecord: RequestRecord = {
+          cycleNumber,
+          walletIndex: i,
+          address: maskAddress(address),
+          startedAt: result.startedAt.toISOString(),
+          cloudflareDetectedAt: null,
+          cloudflarePassedAt: null,
+          cloudflareDurationMs: null,
+          submitAt: result.submitAt?.toISOString() || null,
+          resultAt: result.resultAt?.toISOString() || null,
+          requestDurationMs: result.requestDurationMs,
+          cooldownDurationMs: null,
+          result: result.state,
+          errorText: result.errorText,
+          nextAllowedAt: result.nextAllowedAt?.toISOString() || null,
+        };
+        addRequest(history, requestRecord);
+        saveHistory(history);
       }
 
-      const result = await processWallet(
-        page,
-        address,
-        i,
-        config.wallets.length,
-        config.faucet.walletTimeoutMs
-      );
+      if (!shouldStop) {
+        printCycleSummary(cycleResults, cycleNumber, cycleStartMs);
 
-      results.push(result);
+        const cycleRecord: CycleRecord = {
+          cycleNumber,
+          startedAt: new Date(cycleStartMs).toISOString(),
+          completedAt: new Date().toISOString(),
+          totalWallets: cycleResults.length,
+          successful: cycleResults.filter(r => r.state === 'COMPLETED').length,
+          errors: cycleResults.filter(r => r.state === 'ERROR').length,
+          timeouts: cycleResults.filter(r => r.state === 'TIMEOUT').length,
+          durationMs: Date.now() - cycleStartMs,
+        };
+        addCycle(history, cycleRecord);
+        saveHistory(history);
+
+        const resultsPath = path.join('data', 'results.json');
+        saveResults(cycleResults, resultsPath, cycleNumber);
+
+        log('Saving cycle results...');
+        log('Calculating next cycle start time...');
+
+        const nextWait = calculateNextRequestTime(history);
+        if (nextWait.waitMs > 0) {
+          log(`Waiting ${formatDuration(nextWait.waitMs)} before next cycle`);
+          log(`Reason: ${nextWait.reason}`);
+          await waitWithCountdown(nextWait.waitMs, nextWait.reason);
+        }
+
+        cycleNumber++;
+      }
     }
   } catch (error) {
     logError('Fatal error', error);
-    if (results.length === 0) {
-      log('Browser startup failed. No wallets were processed.');
-    }
     throw error;
   } finally {
+    process.removeListener('SIGINT', shutdownHandler);
+    process.removeListener('SIGTERM', shutdownHandler);
+
     if (context) {
       await context.close();
     }
+
+    saveHistory(history);
+
+    log('Graceful shutdown complete');
+    log('Browser session preserved (Chrome still running)');
   }
-
-  printSummary(results);
-
-  const resultsPath = path.join('data', 'results.json');
-  saveResults(results, resultsPath);
-
-  log('Crane finished');
 }
