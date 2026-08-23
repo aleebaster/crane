@@ -5,122 +5,94 @@ export interface CloudflareVerificationResult {
   verified: boolean;
   reason: string;
   durationMs: number | null;
+  widgetFound: boolean;
+  tokenPresent: boolean;
 }
-
-const TURNSTILE_SELECTORS = {
-  widget: '#cf-turnstile-wrapper, .cf-turnstile, [data-sitekey]',
-  checkbox: 'input[type="checkbox"], .cf-turnstile-checkbox',
-  success: '.cf-turnstile-verified, .cf-turnstile-success, [data-verified="true"]',
-  challenge: '.cf-turnstile-challenge, .cf-turnstile-widget',
-} as const;
-
-const SUCCESS_PATTERNS = [
-  /success/i,
-  /verified/i,
-  /completed/i,
-  /passed/i,
-  /успіх/i,
-  /пройдено/i,
-] as const;
 
 export async function checkCloudflareTurnstile(page: Page): Promise<CloudflareVerificationResult> {
   const startTime = Date.now();
 
   log('Checking Cloudflare verification before request...');
 
-  const widgetExists = await page.evaluate(() => {
-    const widget = document.querySelector(
-      '#cf-turnstile-wrapper, .cf-turnstile, [data-sitekey]'
-    );
-    return widget !== null;
+  const analysis = await page.evaluate(() => {
+    const result = {
+      cftsWidget: false,
+      tokenInput: false,
+      tokenValue: '',
+      iframeCount: 0,
+      cloudflareIframeCount: 0,
+      hasSuccessText: false,
+      successText: '',
+      bodyText: '',
+    };
+
+    const cftsWidget = document.getElementById('cftsWidget');
+    if (cftsWidget) {
+      result.cftsWidget = true;
+    }
+
+    const tokenInput = document.querySelector('input[name="cf-turnstile-response"]');
+    if (tokenInput) {
+      result.tokenInput = true;
+      result.tokenValue = (tokenInput as HTMLInputElement).value || '';
+    }
+
+    result.iframeCount = document.querySelectorAll('iframe').length;
+    result.cloudflareIframeCount = Array.from(document.querySelectorAll('iframe')).filter(f => {
+      const src = f.src || '';
+      return src.includes('cloudflare') || src.includes('challenges.cloudflare');
+    }).length;
+
+    const bodyText = document.body.innerText || '';
+    result.bodyText = bodyText.substring(0, 500);
+
+    if (/успіх|success|verified|completed/i.test(bodyText)) {
+      result.hasSuccessText = true;
+      const match = bodyText.match(/(успіх|success|verified|completed)/i);
+      if (match) {
+        result.successText = match[1];
+      }
+    }
+
+    return result;
   });
 
-  if (!widgetExists) {
-    log('No Cloudflare Turnstile widget detected');
+  log(`Total frames: ${analysis.iframeCount}`);
+  log(`Cloudflare-related frames: ${analysis.cloudflareIframeCount}`);
+  log(`#cftsWidget: ${analysis.cftsWidget ? 'FOUND' : 'NOT FOUND'}`);
+  log(`Cloudflare text: ${analysis.hasSuccessText ? 'FOUND' : 'NOT FOUND'}`);
+  log(`Success text: ${analysis.successText || 'none'}`);
+
+  if (!analysis.cftsWidget && !analysis.tokenInput) {
+    log('Final state: NOT_PRESENT');
     return {
       verified: true,
       reason: 'No Cloudflare widget present',
       durationMs: null,
+      widgetFound: false,
+      tokenPresent: false,
     };
   }
 
   log('Cloudflare widget detected');
 
-  const verificationState = await page.evaluate(() => {
-    const successEl = document.querySelector(
-      '.cf-turnstile-verified, .cf-turnstile-success, [data-verified="true"]'
-    );
-    if (successEl) {
-      const text = (successEl.textContent || '').trim();
-      return { verified: true, text };
+  if (analysis.tokenInput && analysis.tokenValue.length > 10) {
+    log('Current verification state: VERIFIED');
+    log('Token is present and non-empty');
+    if (analysis.hasSuccessText) {
+      log(`Success text detected: ${analysis.successText}`);
     }
-
-    const widget = document.querySelector('.cf-turnstile, [data-sitekey]');
-    if (widget) {
-      const text = (widget.textContent || '').trim();
-      const hasSuccess = /success|verified|completed|passed/i.test(text);
-      if (hasSuccess) {
-        return { verified: true, text };
-      }
-
-      const ariaLabel = widget.getAttribute('aria-label') || '';
-      if (/success|verified|completed/i.test(ariaLabel)) {
-        return { verified: true, text: ariaLabel };
-      }
-    }
-
-    const successText = document.body.innerText;
-    for (const pattern of [/success/i, /verified/i, /completed/i]) {
-      if (pattern.test(successText)) {
-        const match = successText.match(new RegExp(`.{0,50}${pattern.source}.{0,50}`, 'i'));
-        if (match) {
-          return { verified: true, text: match[0].trim() };
-        }
-      }
-    }
-
-    return { verified: false, text: '' };
-  });
-
-  if (verificationState.verified) {
-    log('Verification is complete');
-    log('Green checkmark / success state detected');
-    log('Continuing with faucet request');
     return {
       verified: true,
-      reason: 'Success state detected',
+      reason: 'Token present and verified',
       durationMs: Date.now() - startTime,
+      widgetFound: true,
+      tokenPresent: true,
     };
   }
 
-  log('Verification is not complete');
-
-  const checkboxAvailable = await page.evaluate(() => {
-    const checkbox = document.querySelector(
-      'input[type="checkbox"], .cf-turnstile-checkbox'
-    );
-    if (!checkbox) return false;
-
-    const style = window.getComputedStyle(checkbox);
-    return style.display !== 'none' && style.visibility !== 'hidden';
-  });
-
-  if (checkboxAvailable) {
-    log('Checkbox is available');
-    log('Attempting normal widget interaction...');
-
-    try {
-      await page.click(
-        'input[type="checkbox"], .cf-turnstile-checkbox',
-        { timeout: 5000 }
-      );
-      log('Checkbox clicked, waiting for verification result...');
-    } catch (error) {
-      log('Failed to click checkbox, will wait for manual verification');
-    }
-  } else {
-    log('Checkbox not available for normal interaction');
-  }
+  log('Current verification state: UNVERIFIED');
+  log('Waiting for verification to complete...');
 
   const maxWait = 300_000;
   const pollInterval = 2000;
@@ -128,36 +100,41 @@ export async function checkCloudflareTurnstile(page: Page): Promise<CloudflareVe
 
   while (Date.now() - waitStart < maxWait) {
     const currentState = await page.evaluate(() => {
-      const successEl = document.querySelector(
-        '.cf-turnstile-verified, .cf-turnstile-success, [data-verified="true"]'
-      );
-      if (successEl) {
-        return { verified: true, text: (successEl.textContent || '').trim() };
+      const tokenInput = document.querySelector('input[name="cf-turnstile-response"]');
+      const tokenValue = tokenInput ? (tokenInput as HTMLInputElement).value || '' : '';
+
+      const bodyText = document.body.innerText || '';
+      const hasSuccess = /успіх|success|verified|completed/i.test(bodyText);
+      let successText = '';
+      if (hasSuccess) {
+        const match = bodyText.match(/(успіх|success|verified|completed)/i);
+        if (match) successText = match[1];
       }
 
-      const widget = document.querySelector('.cf-turnstile, [data-sitekey]');
-      if (widget) {
-        const text = (widget.textContent || '').trim();
-        if (/success|verified|completed|passed/i.test(text)) {
-          return { verified: true, text };
-        }
-      }
-
-      return { verified: false, text: '' };
+      return {
+        verified: tokenValue.length > 10 || hasSuccess,
+        tokenPresent: tokenValue.length > 10,
+        hasSuccessText: hasSuccess,
+        successText,
+      };
     });
 
     if (currentState.verified) {
       log('Cloudflare verification confirmed');
-      log('Success state detected');
-      log('Proceeding with wallet request');
+      if (currentState.hasSuccessText) {
+        log(`Success text detected: ${currentState.successText}`);
+      }
+      log('Current verification state: VERIFIED');
       return {
         verified: true,
         reason: 'Verification completed',
         durationMs: Date.now() - startTime,
+        widgetFound: true,
+        tokenPresent: currentState.tokenPresent,
       };
     }
 
-    if (Date.now() - waitStart > 10000 && Date.now() - waitStart % 30000 < pollInterval) {
+    if (Date.now() - waitStart > 10000 && (Date.now() - waitStart) % 30000 < pollInterval) {
       log('Cloudflare requires user interaction');
       log('Waiting for manual verification...');
     }
@@ -166,11 +143,12 @@ export async function checkCloudflareTurnstile(page: Page): Promise<CloudflareVe
   }
 
   log('Cloudflare verification timed out after 5 minutes');
-  log('Verification completed by user');
   return {
     verified: false,
     reason: 'Verification timed out',
     durationMs: Date.now() - startTime,
+    widgetFound: true,
+    tokenPresent: false,
   };
 }
 
