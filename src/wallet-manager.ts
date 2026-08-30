@@ -248,9 +248,19 @@ async function validateProfiles(profiles: NSTProfileMapping[]): Promise<Validati
   console.log('============================================================');
 
   const results: ProfileValidationResult[] = [];
+  let hitPlanLimit = false;
 
   for (let i = 0; i < profiles.length; i++) {
     const profile = profiles[i];
+
+    // If we already hit plan limit on a previous profile, skip remaining —
+    // plan limit is account-level, so all profiles will fail with the same error.
+    if (hitPlanLimit) {
+      console.log(`Profile ${i + 1} (${profile.name}) ... SKIPPED (plan limit hit earlier)`);
+      results.push({ profile, launchable: false, errorMessage: 'Skipped — NSTbrowser plan limit (detected on earlier profile)' });
+      continue;
+    }
+
     process.stdout.write(`Profile ${i + 1} (${profile.name}) ... `);
 
     try {
@@ -275,8 +285,11 @@ async function validateProfiles(profiles: NSTProfileMapping[]): Promise<Validati
       const msg = error instanceof Error ? error.message : String(error);
       if (error instanceof NSTProfileLaunchError) {
         if (error.isPlanLimit) {
-          console.log(`FAILED (plan limit, code ${error.nstCode})`);
+          console.log(`FAILED (plan limit, code ${error.nstCode}) — stopping validation (account-level limit)`);
           results.push({ profile, launchable: false, errorMessage: `NSTbrowser plan limit exceeded (code ${error.nstCode})` });
+          hitPlanLimit = true;
+          // Do NOT continue to launch remaining profiles — plan limit is account-wide.
+          // Mark remaining profiles as skipped without making API calls.
         } else if (error.httpStatus === 403) {
           console.log(`FAILED (HTTP 403 — proxy configuration error)`);
           results.push({ profile, launchable: false, errorMessage: 'HTTP 403 — proxy configuration error' });
@@ -297,12 +310,17 @@ async function validateProfiles(profiles: NSTProfileMapping[]): Promise<Validati
   // Summary
   const launchable = results.filter(r => r.launchable).map(r => r.profile);
   const failed = results.filter(r => !r.launchable);
+  const skippedDueToPlanLimit = results.filter(r => r.errorMessage?.includes('Skipped — NSTbrowser plan limit'));
   const ips = results.filter(r => r.ip && r.ip !== 'unknown').map(r => r.ip!);
   const uniqueIps = new Set(ips);
 
   console.log('');
   console.log(`Launchable: ${launchable.length}/${profiles.length}`);
   console.log(`Failed: ${failed.length}/${profiles.length}`);
+
+  if (skippedDueToPlanLimit.length > 0) {
+    console.log(`  (of which ${skippedDueToPlanLimit.length} skipped — plan limit detected on first attempt, no further API calls made)`);
+  }
 
   if (ips.length > 0) {
     console.log(`\nIP addresses detected:`);
@@ -587,19 +605,12 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
       const profiles = buildWalletMapping(config);
       logWalletMapping(profiles);
 
-      // Auto-fix broken proxy configs before validation
-      // Skip if proxy is not configured (plan-limit errors don't need proxy fix)
-      let proxyFixed = false;
+      // Auto-fix broken proxy configs before validation.
+      // Plan limit detection: we don't know yet if plan limit is hit,
+      // but we skip proxy fix if proxy is not configured.
       if (config.browser.proxy?.enabled) {
         const proxyUrl = `http://${config.browser.proxy.username}:${config.browser.proxy.password}@${config.browser.proxy.host}:${config.browser.proxy.port}`;
-        // Quick check: if ALL profiles return 6001, don't waste time fixing proxy
-        const quickCheck = await launchNSTProfile(profiles[0].id).catch(e => e);
-        if (quickCheck instanceof NSTProfileLaunchError && quickCheck.isPlanLimit) {
-          console.log('\n⚠️  NSTbrowser plan limit detected — skipping proxy auto-fix (not the cause).');
-        } else {
-          await fixBrokenProfiles(profiles, proxyUrl);
-          proxyFixed = true;
-        }
+        await fixBrokenProfiles(profiles, proxyUrl);
       }
 
       // Validate all profiles can launch
