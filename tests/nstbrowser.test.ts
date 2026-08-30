@@ -35,13 +35,19 @@ function errorResponse(status: number, text = 'error'): Response {
 
 afterEach(() => {
   global.fetch = originalFetch;
+  vi.unstubAllEnvs();
+});
+
+beforeEach(() => {
+  // Set a dummy API key for all tests
+  vi.stubEnv('NST_API_KEY', 'test-api-key-123');
 });
 
 // ─── isNSTRunning ───────────────────────────────────────────────────────────
 
 describe('isNSTRunning', () => {
   it('should return true when API responds OK', async () => {
-    mockFetch(() => jsonResponse({ status: 'ok' }));
+    mockFetch(() => jsonResponse({ browsers: [] }));
     const running = await isNSTRunning();
     expect(running).toBe(true);
   });
@@ -53,10 +59,8 @@ describe('isNSTRunning', () => {
   });
 
   it('should return false when API returns error', async () => {
-    mockFetch(() => errorResponse(500));
+    mockFetch(() => errorResponse(401, 'Unauthorized'));
     const running = await isNSTRunning();
-    // fetch with non-OK response should still return false in isNSTRunning
-    // because the actual check is res.ok
     expect(running).toBe(false);
   });
 });
@@ -78,12 +82,9 @@ describe('generateUniqueFingerprint', () => {
   });
 
   it('should generate different fingerprints on multiple calls', () => {
-    // Generate many fingerprints; at least some should differ
     const fps = Array.from({ length: 20 }, () => generateUniqueFingerprint());
     const uas = new Set(fps.map((f) => f.userAgent));
     const tzs = new Set(fps.map((f) => f.timezone));
-    // With random selection from arrays of 4/6 items, 20 samples
-    // should produce at least 2 unique values
     expect(uas.size).toBeGreaterThan(1);
     expect(tzs.size).toBeGreaterThan(1);
   });
@@ -96,9 +97,9 @@ describe('createNSTProfile', () => {
     mockFetch((_url, init) => {
       const body = JSON.parse(init?.body as string);
       expect(body.name).toBe('test-wallet');
-      expect(body.browserType).toBe('chromium');
+      expect(body.platform).toBe('Windows');
       expect(body.fingerprint).toBeDefined();
-      expect(body.fingerprint.userAgent).toBeDefined();
+      expect(body.fingerprint.flags).toBeDefined();
       return jsonResponse({ profileId: 'abc-123', id: 'abc-123' });
     });
 
@@ -106,10 +107,21 @@ describe('createNSTProfile', () => {
     expect(id).toBe('abc-123');
   });
 
+  it('should include x-api-key header', async () => {
+    let capturedHeaders: Record<string, string> = {};
+    mockFetch((_url, init) => {
+      capturedHeaders = init?.headers as Record<string, string>;
+      return jsonResponse({ profileId: 'key-test' });
+    });
+
+    await createNSTProfile({ name: 'key-test' });
+    expect(capturedHeaders['x-api-key']).toBe('test-api-key-123');
+  });
+
   it('should include custom fingerprint fields', async () => {
     mockFetch((_url, init) => {
       const body = JSON.parse(init?.body as string);
-      expect(body.fingerprint.timezone).toBe('Europe/Kyiv');
+      expect(body.fingerprint.localization.timezone).toBe('Europe/Kyiv');
       return jsonResponse({ profileId: 'custom-1' });
     });
 
@@ -128,32 +140,32 @@ describe('createNSTProfile', () => {
     ).rejects.toThrow('Failed to create NST profile');
   });
 
-  it('should include storage in request body', async () => {
+  it('should include proxy when provided', async () => {
     mockFetch((_url, init) => {
       const body = JSON.parse(init?.body as string);
-      expect(body.storage.cookies).toEqual([
-        { name: 'cf_clearance', value: 'xyz', domain: '.example.com' },
-      ]);
-      return jsonResponse({ profileId: 'with-storage' });
+      expect(body.proxy).toBe('http://user:pass@proxy:8080');
+      return jsonResponse({ profileId: 'proxy-1' });
     });
 
     const id = await createNSTProfile({
-      name: 'with-storage',
-      storage: {
-        cookies: [{ name: 'cf_clearance', value: 'xyz', domain: '.example.com' }],
-      },
+      name: 'with-proxy',
+      proxy: 'http://user:pass@proxy:8080',
     });
-    expect(id).toBe('with-storage');
+    expect(id).toBe('proxy-1');
   });
 });
 
 // ─── launchNSTProfile ───────────────────────────────────────────────────────
 
 describe('launchNSTProfile', () => {
-  it('should return WebSocket endpoint', async () => {
-    mockFetch(() =>
-      jsonResponse({ wsEndpoint: 'ws://127.0.0.1:9223/devtools/browser/abc' })
-    );
+  it('should start browser and return WebSocket endpoint', async () => {
+    mockFetch((url, init) => {
+      if (url.includes('/browsers/') && url.includes('/debugger')) {
+        return jsonResponse({ wsUrl: 'ws://127.0.0.1:9223/devtools/browser/abc' });
+      }
+      // POST /browsers/ to start
+      return jsonResponse({ id: 'browser-1', profileId: 'profile-1' });
+    });
 
     const ws = await launchNSTProfile('profile-1');
     expect(ws).toContain('ws://');
@@ -162,7 +174,7 @@ describe('launchNSTProfile', () => {
   it('should throw on launch failure', async () => {
     mockFetch(() => errorResponse(404, 'Profile not found'));
 
-    await expect(launchNSTProfile('missing')).rejects.toThrow('Failed to launch NST profile');
+    await expect(launchNSTProfile('missing')).rejects.toThrow('Failed to start NST browser');
   });
 });
 
@@ -170,14 +182,14 @@ describe('launchNSTProfile', () => {
 
 describe('closeNSTProfile', () => {
   it('should close without error', async () => {
-    mockFetch(() => jsonResponse({ success: true }));
-    // Should not throw
+    mockFetch(() =>
+      jsonResponse({ browsers: [{ id: 'b1', profileId: 'profile-1' }] })
+    );
     await expect(closeNSTProfile('profile-1')).resolves.toBeUndefined();
   });
 
   it('should not throw on close failure', async () => {
     mockFetch(() => errorResponse(500));
-    // Should not throw
     await expect(closeNSTProfile('profile-1')).resolves.toBeUndefined();
   });
 });
@@ -225,6 +237,17 @@ describe('listNSTProfiles', () => {
     const profiles = await listNSTProfiles();
     expect(profiles).toEqual([]);
   });
+
+  it('should pass x-api-key header', async () => {
+    let capturedHeaders: Record<string, string> = {};
+    mockFetch((_url, init) => {
+      capturedHeaders = init?.headers as Record<string, string>;
+      return jsonResponse({ profiles: [] });
+    });
+
+    await listNSTProfiles();
+    expect(capturedHeaders['x-api-key']).toBe('test-api-key-123');
+  });
 });
 
 // ─── Type checks ────────────────────────────────────────────────────────────
@@ -249,5 +272,13 @@ describe('NST types', () => {
       fingerprint: { timezone: 'UTC' },
     };
     expect(config.fingerprint?.timezone).toBe('UTC');
+  });
+
+  it('NSTProfileConfig should accept proxy', () => {
+    const config: NSTProfileConfig = {
+      name: 'proxied',
+      proxy: 'http://proxy:8080',
+    };
+    expect(config.proxy).toBe('http://proxy:8080');
   });
 });

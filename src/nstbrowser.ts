@@ -7,8 +7,33 @@ const execAsync = promisify(exec);
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
-const NST_API_BASE = 'http://localhost:8848/api/v1';
+const NST_API_BASE = 'http://localhost:8848/api/v2';
 const NST_EXECUTABLE = 'C:\\Users\\andre\\OneDrive\\Desktop\\Nstbrowser.lnk';
+
+/**
+ * Get the NSTbrowser API key from environment.
+ * Generate one in NSTbrowser Client: Settings > API Keys
+ */
+function getApiKey(): string {
+  const key = process.env.NST_API_KEY;
+  if (!key) {
+    throw new Error(
+      'NST_API_KEY is not set. Generate an API key in NSTbrowser Client:\n' +
+      '  1. Open NSTbrowser\n' +
+      '  2. Go to Settings > API Keys\n' +
+      '  3. Create a new key and copy it\n' +
+      '  4. Set it in .env: NST_API_KEY=your_key_here'
+    );
+  }
+  return key;
+}
+
+function authHeaders(): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    'x-api-key': getApiKey(),
+  };
+}
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -31,10 +56,7 @@ export interface NSTProfile {
 export interface NSTProfileConfig {
   name: string;
   fingerprint?: Partial<NSTFingerprint>;
-  storage?: {
-    localStorage?: Record<string, string>;
-    cookies?: Array<{ name: string; value: string; domain: string }>;
-  };
+  proxy?: string;
 }
 
 export interface NSTBrowserLaunchResult {
@@ -51,7 +73,9 @@ export interface NSTBrowserLaunchResult {
  */
 export async function isNSTRunning(): Promise<boolean> {
   try {
-    const res = await fetch(`${NST_API_BASE}/status`, {
+    const res = await fetch(`${NST_API_BASE}/browsers`, {
+      method: 'GET',
+      headers: { 'x-api-key': process.env.NST_API_KEY || '' },
       signal: AbortSignal.timeout(2000),
     });
     return res.ok;
@@ -92,40 +116,56 @@ export async function ensureNSTRunning(): Promise<void> {
   }
 }
 
-// ─── Profile Management ─────────────────────────────────────────────────────
+// ─── Profile Management (API v2) ───────────────────────────────────────────
 
 /**
  * Create a new browser profile in NSTbrowser.
+ * API: POST /api/v2/profiles
  */
 export async function createNSTProfile(config: NSTProfileConfig): Promise<string> {
-  const defaultFingerprint: NSTFingerprint = {
-    userAgent:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    platform: 'Win32',
-    language: 'en-US,en;q=0.9',
-    timezone: 'America/New_York',
-    screenResolution: '1920x1080',
-    webglVendor: 'Google Inc. (Intel)',
-    webglRenderer:
-      'ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00005917) Direct3D11 vs_5_0 ps_5_0, D3D11)',
-  };
-
   const body = {
     name: config.name,
-    browserType: 'chromium',
+    platform: 'Windows',
+    kernelMilestone: '140',
     fingerprint: {
-      ...defaultFingerprint,
-      ...config.fingerprint,
-    },
-    storage: config.storage || {
-      localStorage: {},
-      cookies: [],
+      flags: {
+        audio: 'Noise',
+        battery: 'Masked',
+        canvas: 'Noise',
+        clientRect: 'Noise',
+        fonts: 'Masked',
+        geolocation: 'Custom',
+        geolocationPopup: 'Prompt',
+        gpu: 'Allow',
+        localization: 'Custom',
+        screen: 'Custom',
+        speech: 'Masked',
+        timezone: 'Custom',
+        webgl: 'Noise',
+        webrtc: 'Custom',
+      },
+      userAgent: config.fingerprint?.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+      localization: {
+        language: config.fingerprint?.language || 'en-US',
+        languages: ['en-US', 'en'],
+        timezone: config.fingerprint?.timezone || 'America/New_York',
+      },
+      screen: {
+        width: 1920,
+        height: 1080,
+      },
+      deviceMemory: 8,
+      hardwareConcurrency: 16,
     },
   };
+
+  if (config.proxy) {
+    (body as Record<string, unknown>).proxy = config.proxy;
+  }
 
   const res = await fetch(`${NST_API_BASE}/profiles`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(body),
   });
 
@@ -141,36 +181,73 @@ export async function createNSTProfile(config: NSTProfileConfig): Promise<string
 }
 
 /**
- * Launch a profile and return the WebSocket endpoint for CDP connection.
+ * Launch a profile via the browser API and return CDP WebSocket endpoint.
+ * API: POST /api/v2/browsers/
  */
 export async function launchNSTProfile(profileId: string): Promise<string> {
-  const res = await fetch(`${NST_API_BASE}/profiles/${profileId}/launch`, {
+  // First, start the browser via the Browsers API
+  const startRes = await fetch(`${NST_API_BASE}/browsers/`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ headless: false }),
+    headers: authHeaders(),
+    body: JSON.stringify({
+      profileId,
+      headless: false,
+    }),
   });
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Failed to launch NST profile ${profileId}: ${res.status} ${text}`);
+  if (!startRes.ok) {
+    const text = await startRes.text();
+    throw new Error(`Failed to start NST browser for profile ${profileId}: ${startRes.status} ${text}`);
   }
 
-  const data = (await res.json()) as Record<string, unknown>;
-  const wsEndpoint = (data.wsEndpoint || data.webSocketDebuggerUrl) as string;
+  const startData = (await startRes.json()) as Record<string, unknown>;
+  const browserId = startData.id as string;
+
+  log(`NST browser started: ${browserId}`);
+
+  // Get the debugger WebSocket URL
+  const debugRes = await fetch(`${NST_API_BASE}/browsers/${browserId}/debugger`, {
+    method: 'GET',
+    headers: { 'x-api-key': getApiKey() },
+  });
+
+  if (!debugRes.ok) {
+    const text = await debugRes.text();
+    throw new Error(`Failed to get debugger for browser ${browserId}: ${debugRes.status} ${text}`);
+  }
+
+  const debugData = (await debugRes.json()) as Record<string, unknown>;
+  const wsEndpoint = (debugData.wsUrl || debugData.webSocketDebuggerUrl || debugData.url) as string;
+
   log(`NST profile ${profileId} launched: ${wsEndpoint}`);
   return wsEndpoint;
 }
 
 /**
- * Close a running profile.
+ * Close a running browser instance.
+ * API: DELETE /api/v2/browsers/{id}
  */
 export async function closeNSTProfile(profileId: string): Promise<void> {
   try {
-    const res = await fetch(`${NST_API_BASE}/profiles/${profileId}/close`, {
-      method: 'POST',
+    // Find the browser by profile ID and close it
+    const listRes = await fetch(`${NST_API_BASE}/browsers`, {
+      method: 'GET',
+      headers: { 'x-api-key': getApiKey() },
     });
-    if (res.ok) {
-      log(`NST profile ${profileId} closed`);
+    if (!listRes.ok) return;
+
+    const listData = (await listRes.json()) as { browsers?: Array<{ id: string; profileId: string }> };
+    const browsers = listData.browsers || [];
+    const browser = browsers.find((b) => b.profileId === profileId);
+
+    if (browser) {
+      const res = await fetch(`${NST_API_BASE}/browsers/${browser.id}`, {
+        method: 'DELETE',
+        headers: { 'x-api-key': getApiKey() },
+      });
+      if (res.ok) {
+        log(`NST profile ${profileId} closed`);
+      }
     }
   } catch (error) {
     console.error(`[NST] Failed to close profile ${profileId}:`, error);
@@ -179,11 +256,13 @@ export async function closeNSTProfile(profileId: string): Promise<void> {
 
 /**
  * Delete a profile permanently.
+ * API: DELETE /api/v2/profiles/{id}
  */
 export async function deleteNSTProfile(profileId: string): Promise<void> {
   try {
     const res = await fetch(`${NST_API_BASE}/profiles/${profileId}`, {
       method: 'DELETE',
+      headers: { 'x-api-key': getApiKey() },
     });
     if (res.ok) {
       log(`NST profile ${profileId} deleted`);
@@ -195,10 +274,14 @@ export async function deleteNSTProfile(profileId: string): Promise<void> {
 
 /**
  * List all profiles in NSTbrowser.
+ * API: GET /api/v2/profiles
  */
 export async function listNSTProfiles(): Promise<NSTProfile[]> {
   try {
-    const res = await fetch(`${NST_API_BASE}/profiles`);
+    const res = await fetch(`${NST_API_BASE}/profiles`, {
+      method: 'GET',
+      headers: { 'x-api-key': getApiKey() },
+    });
     if (!res.ok) return [];
     const data = (await res.json()) as { profiles?: NSTProfile[] };
     return data.profiles || [];
@@ -279,10 +362,10 @@ export async function launchProfileForWallet(
  */
 export function generateUniqueFingerprint(): Partial<NSTFingerprint> {
   const userAgents = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0',
   ];
 
   const timezones = [
@@ -295,11 +378,11 @@ export function generateUniqueFingerprint(): Partial<NSTFingerprint> {
   ];
 
   const languages = [
-    'en-US,en;q=0.9',
-    'en-GB,en;q=0.9',
-    'fr-FR,fr;q=0.9',
-    'de-DE,de;q=0.9',
-    'es-ES,es;q=0.9',
+    'en-US',
+    'en-GB',
+    'fr-FR',
+    'de-DE',
+    'es-ES',
   ];
 
   const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
