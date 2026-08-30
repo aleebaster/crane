@@ -19,7 +19,12 @@
     "tb1q46gqmksn5m0hrq3mdude3rqjtygeevmmcg0n37",
     "tb1q5l0t85kh9zd0kggrf8qg7290e4cxcqxjs4l0rt",
     "tb1qz5hrp9ultpqttyqzvzjy635gmskzcuc7485pqp",
-    "tb1qd79frfld74sfw5us4jt98wtl0keq23tkhqfsku"
+    "tb1qd79frfld74sfw5us4jt98wtl0keq23tkhqfsku",
+    "tb1qmx5unsg33ae608hk52zxj07fffpnhjkjn8fvpu",
+    "tb1qh9j5wdy9zfzvm2sddelerf76neqrss62zx07yv",
+    "tb1qu7pmrtenpuh9wczcpa3exqsph62rc2d2vp0lhd",
+    "tb1qk5yxureusfx05s44t9pf5qglmngehfqze4jskt",
+    "tb1qsnntf8znsykqu9f6vp45eq4h2398z27egjyhqn"
   ],
   "browser": {
     "userDataDir": "C:\\Users\\andre\\AppData\\Local\\Google\\Chrome\\User Data",
@@ -40,7 +45,8 @@
         "name": "Profile 1",
         "wallets": [
           "tb1qt976z56ssnzhs2a9kkfergn33xdhrp6zad8s0k",
-          "tb1q8kjsfan2vuntsu4g2h3c35g4zxq3hssye7nvpl"
+          "tb1q8kjsfan2vuntsu4g2h3c35g4zxq3hssye7nvpl",
+          "tb1qmx5unsg33ae608hk52zxj07fffpnhjkjn8fvpu"
         ]
       },
       {
@@ -48,7 +54,8 @@
         "name": "Profile 2",
         "wallets": [
           "tb1qd7mwgjp29szuduc0zsp2gx538xemlhjnx3xmzc",
-          "tb1qrsvjtgz3c4t80yhdxtpn9na02kd5uhdxus7v60"
+          "tb1qrsvjtgz3c4t80yhdxtpn9na02kd5uhdxus7v60",
+          "tb1qh9j5wdy9zfzvm2sddelerf76neqrss62zx07yv"
         ]
       },
       {
@@ -56,7 +63,8 @@
         "name": "Profile 3",
         "wallets": [
           "tb1q4dzh63z5j0r0dk76zepc03t4wdu0ruk6vxph95",
-          "tb1qzlsfvw6v50mnrjlv6ek87tqyrunpsmh788w6se"
+          "tb1qzlsfvw6v50mnrjlv6ek87tqyrunpsmh788w6se",
+          "tb1qu7pmrtenpuh9wczcpa3exqsph62rc2d2vp0lhd"
         ]
       },
       {
@@ -64,7 +72,8 @@
         "name": "Profile 4",
         "wallets": [
           "tb1qa0pdlfd8md7c6gwcrcr377qmdlrdhlqc8yz7sa",
-          "tb1q5583vmpk486uhzlkfqqg7axum72phc4wewv7qv"
+          "tb1q5583vmpk486uhzlkfqqg7axum72phc4wewv7qv",
+          "tb1qk5yxureusfx05s44t9pf5qglmngehfqze4jskt"
         ]
       },
       {
@@ -72,7 +81,8 @@
         "name": "Profile 5",
         "wallets": [
           "tb1qamlmfzume0efp5dl9h2jamf2k0ax8plll8ksds",
-          "tb1q894cvmnxmyfd77dewhn45f30hmfmm4yvduvgc8"
+          "tb1q894cvmnxmyfd77dewhn45f30hmfmm4yvduvgc8",
+          "tb1qsnntf8znsykqu9f6vp45eq4h2398z27egjyhqn"
         ]
       },
       {
