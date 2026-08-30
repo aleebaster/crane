@@ -1,6 +1,6 @@
 import { Browser, BrowserContext, Page } from 'playwright-core';
 import { log, logError } from './logger';
-import { BrowserConfig, launchBrowser } from './browser';
+import { BrowserConfig, launchBrowser, switchToProfile, getProfileManager } from './browser';
 import { FaucetConfig, processWallet, resetForNextWallet, isValidSignetAddress } from './faucet';
 import { WalletResult } from './faucet';
 import { checkCloudflareTurnstile, CloudflareVerificationResult } from './cloudflare';
@@ -198,7 +198,8 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
     const launchResult = await launchBrowser(config.browser);
     browser = launchResult.browser;
     context = launchResult.context;
-    const page = launchResult.page;
+    let page = launchResult.page;
+    let currentProfileId = launchResult.profileId || null;
 
     await navigateToFaucet(page, config.faucet.url);
 
@@ -214,11 +215,29 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
       log('========================================');
 
       const cycleResults: WalletResult[] = [];
+      const profileUsageStats: Record<string, number> = {};
 
       for (let i = 0; i < config.wallets.length; i++) {
         if (shouldStop) break;
 
         const address = config.wallets[i];
+
+        // NST mode: switch to the correct profile for this wallet
+        if (config.browser.useNSTbrowser) {
+          const switched = await switchToProfile(address);
+          if (switched) {
+            // Profile switched — navigate to faucet on new profile
+            browser = switched.browser;
+            context = switched.context;
+            page = switched.page;
+            currentProfileId = switched.profileId;
+            await navigateToFaucet(page, config.faucet.url);
+          }
+          // Track usage
+          if (currentProfileId) {
+            profileUsageStats[currentProfileId] = (profileUsageStats[currentProfileId] || 0) + 1;
+          }
+        }
 
         const lastRequest = history.requests.length > 0 ? history.requests[history.requests.length - 1] : null;
         const waitDecision = calculateNextRequestTime(history);
@@ -339,6 +358,17 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
 
       if (!shouldStop) {
         printCycleSummary(cycleResults, cycleNumber, cycleStartMs);
+
+        // Log profile usage stats
+        if (config.browser.useNSTbrowser && Object.keys(profileUsageStats).length > 0) {
+          log('\n📊 Profile usage stats:');
+          const profiles = config.browser.nstProfiles || [];
+          for (const [id, count] of Object.entries(profileUsageStats)) {
+            const profile = profiles.find((p) => p.id === id);
+            const name = profile?.name || id.substring(0, 8);
+            log(`  ${name}: ${count} wallet(s)`);
+          }
+        }
 
         const cycleRecord: CycleRecord = {
           cycleNumber,

@@ -369,6 +369,60 @@ export function getProfilePool(): ProfilePool | null {
   return profilePool;
 }
 
+/**
+ * Switch to a different NST profile for a specific wallet.
+ * Closes the current profile and launches the mapped one.
+ */
+export async function switchToProfile(
+  address: string
+): Promise<NSTBrowserLaunchResult | null> {
+  if (!profileManager || !fingerprintRotator) {
+    return null;
+  }
+
+  const profileId = profileManager.getProfileForWallet(address);
+  if (!profileId) {
+    log(`[NST] No profile found for ${address.substring(0, 10)}...`);
+    return null;
+  }
+
+  // Skip if already on this profile
+  if (activeNSTProfileId === profileId) {
+    log(`[NST] Already on profile ${profileId}, skipping switch`);
+    return null;
+  }
+
+  // Close previous profile
+  if (activeNSTProfileId) {
+    log(`[NST] Closing previous profile ${activeNSTProfileId}`);
+    await closeNSTProfile(activeNSTProfileId);
+    activeNSTProfileId = null;
+  }
+
+  // Get rotated fingerprint
+  const fingerprint = fingerprintRotator.getNextFingerprint(profileId);
+  log(`[NST] Switching to profile ${profileId}`);
+  log(`[NST] Fingerprint: ${fingerprint.userAgent?.substring(0, 50)}...`);
+
+  // Launch new profile
+  const wsEndpoint = await launchNSTProfile(profileId);
+  const browser = await connectToNSTProfile(wsEndpoint);
+
+  const contexts = browser.contexts();
+  const context = contexts.length > 0 ? contexts[0] : await browser.newContext();
+
+  const pages = context.pages();
+  const page =
+    pages.length > 0 && !pages[0].isClosed()
+      ? pages[0]
+      : await context.newPage();
+
+  activeNSTProfileId = profileId;
+  profileManager.markProfileUsed(profileId);
+
+  return { browser, context, page, profileId };
+}
+
 export async function closeBrowser(
   browser: Browser | null,
   _config?: BrowserConfig

@@ -356,10 +356,12 @@ export async function listNSTProfiles(): Promise<NSTProfile[]> {
       const docs = (inner.docs || inner.profiles || inner.list || []) as Array<Record<string, unknown>>;
 
       for (const doc of docs) {
+        const params = doc.parameters as Record<string, unknown> | undefined;
+        const fp = (params?.fingerprint || doc.fingerprint || {}) as NSTFingerprint;
         allProfiles.push({
           id: (doc.profileId || doc.id || doc._id) as string,
           name: (doc.name || 'unnamed') as string,
-          fingerprint: (doc.parameters?.fingerprint || doc.fingerprint || {}) as NSTFingerprint,
+          fingerprint: fp,
         });
       }
 
