@@ -16,6 +16,9 @@ import {
   ProfileStrategy,
   launchNSTProfile,
   connectToNSTProfile,
+  getProfileById,
+  createNSTProfile,
+  generateUniqueFingerprint,
 } from './nstbrowser';
 import { ProfilePool } from './profile-pool';
 import { ProxyConfig, testProxy } from './proxy';
@@ -213,6 +216,26 @@ async function launchNSTbrowser(config: BrowserConfig): Promise<BrowserLaunchRes
       log(`[NST] Proxy working, outbound IP: ${proxyIp}`);
     } else {
       log('[NST] WARNING: Proxy test failed, continuing without proxy');
+    }
+  }
+
+  // Verify all configured profiles exist in NSTbrowser
+  if (config.nstProfiles && config.nstProfiles.length > 0) {
+    log(`[NST] Verifying ${config.nstProfiles.length} profiles exist...`);
+    for (const profile of config.nstProfiles) {
+      const exists = await getProfileById(profile.id);
+      if (exists) {
+        log(`[NST]   ✓ ${profile.name} (${profile.id.substring(0, 8)}...)`);
+      } else if (config.createProfilesOnDemand) {
+        log(`[NST]   ✗ ${profile.name} — creating...`);
+        await createNSTProfile({
+          name: profile.name,
+          fingerprint: generateUniqueFingerprint(),
+          proxy: config.proxy?.enabled ? config.proxy : undefined,
+        });
+      } else {
+        log(`[NST]   ✗ ${profile.name} — NOT FOUND (createProfilesOnDemand=false)`);
+      }
     }
   }
 

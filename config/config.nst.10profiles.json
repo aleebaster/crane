@@ -9,14 +9,24 @@
     "tb1qa0pdlfd8md7c6gwcrcr377qmdlrdhlqc8yz7sa",
     "tb1q5583vmpk486uhzlkfqqg7axum72phc4wewv7qv",
     "tb1qamlmfzume0efp5dl9h2jamf2k0ax8plll8ksds",
-    "tb1q894cvmnxmyfd77dewhn45f30hmfmm4yvduvgc8"
+    "tb1q894cvmnxmyfd77dewhn45f30hmfmm4yvduvgc8",
+    "tb1q70rj97dyq99qrxks4g52pvejzmap9nredqxnj3",
+    "tb1q44rht772z2rrlw92spfdepclqs5ynpcxwdmwg2",
+    "tb1qz79mczujmwersx0fsulxfeqs383avg5088tdv7",
+    "tb1q8dflh2k6m833healdnvclydrr03rw3auwxafsu",
+    "tb1qvkr5q54s5dn735c6za09w4w2ns4scxzd433hws",
+    "tb1qk9lrrym6dtuse9ne98drqt985g0gr65jrn7hzy",
+    "tb1q46gqmksn5m0hrq3mdude3rqjtygeevmmcg0n37",
+    "tb1q5l0t85kh9zd0kggrf8qg7290e4cxcqxjs4l0rt",
+    "tb1qz5hrp9ultpqttyqzvzjy635gmskzcuc7485pqp",
+    "tb1qd79frfld74sfw5us4jt98wtl0keq23tkhqfsku"
   ],
   "browser": {
     "userDataDir": "C:\\Users\\andre\\AppData\\Local\\Google\\Chrome\\User Data",
     "profileDirectory": "Profile 2",
     "headless": false,
     "useNSTbrowser": true,
-    "createProfilesOnDemand": true,
+    "createProfilesOnDemand": false,
     "profileStrategy": "round_robin",
     "fingerprintRotation": {
       "enabled": true,
@@ -24,17 +34,9 @@
       "attemptsBeforeRotation": 3,
       "maxFingerprints": 10
     },
-    "proxy": {
-      "enabled": true,
-      "type": "socks5",
-      "host": "res.proxy-seller.com",
-      "port": 10000,
-      "username": "8b98d75fb6266769",
-      "password": "ofKnrzR5ASyb3kYx"
-    },
     "nstProfiles": [
       {
-        "id": "profile_1",
+        "id": "5cecb287-793d-4cbf-9aab-7ad8a7923627",
         "name": "Profile 1",
         "wallets": [
           "tb1qt976z56ssnzhs2a9kkfergn33xdhrp6zad8s0k",
@@ -42,7 +44,7 @@
         ]
       },
       {
-        "id": "profile_2",
+        "id": "9d605624-911a-4eef-91fe-0b3db5e5faed",
         "name": "Profile 2",
         "wallets": [
           "tb1qd7mwgjp29szuduc0zsp2gx538xemlhjnx3xmzc",
@@ -50,7 +52,7 @@
         ]
       },
       {
-        "id": "profile_3",
+        "id": "8f0e2848-de70-4fc1-84c6-6943cab5109c",
         "name": "Profile 3",
         "wallets": [
           "tb1q4dzh63z5j0r0dk76zepc03t4wdu0ruk6vxph95",
@@ -58,7 +60,7 @@
         ]
       },
       {
-        "id": "profile_4",
+        "id": "4d598095-53f1-458e-8a93-7864fe3ea4e5",
         "name": "Profile 4",
         "wallets": [
           "tb1qa0pdlfd8md7c6gwcrcr377qmdlrdhlqc8yz7sa",
@@ -66,14 +68,62 @@
         ]
       },
       {
-        "id": "profile_5",
+        "id": "944ef6af-86f5-4a8f-8934-0bbb44d1aa68",
         "name": "Profile 5",
         "wallets": [
           "tb1qamlmfzume0efp5dl9h2jamf2k0ax8plll8ksds",
           "tb1q894cvmnxmyfd77dewhn45f30hmfmm4yvduvgc8"
         ]
+      },
+      {
+        "id": "d17c5cc7-c7dc-468e-b1f6-b46ecb77f17f",
+        "name": "Profile 6",
+        "wallets": [
+          "tb1q70rj97dyq99qrxks4g52pvejzmap9nredqxnj3",
+          "tb1q44rht772z2rrlw92spfdepclqs5ynpcxwdmwg2"
+        ]
+      },
+      {
+        "id": "3f07e5dc-6d8a-488b-8b01-27d79a7b4e4a",
+        "name": "Profile 7",
+        "wallets": [
+          "tb1qz79mczujmwersx0fsulxfeqs383avg5088tdv7",
+          "tb1q8dflh2k6m833healdnvclydrr03rw3auwxafsu"
+        ]
+      },
+      {
+        "id": "5d6bbf60-329e-425d-b008-6571be687d81",
+        "name": "Profile 8",
+        "wallets": [
+          "tb1qvkr5q54s5dn735c6za09w4w2ns4scxzd433hws",
+          "tb1qk9lrrym6dtuse9ne98drqt985g0gr65jrn7hzy"
+        ]
+      },
+      {
+        "id": "884206c8-6335-432f-a858-1daab0b1269f",
+        "name": "Profile 9",
+        "wallets": [
+          "tb1q46gqmksn5m0hrq3mdude3rqjtygeevmmcg0n37",
+          "tb1q5l0t85kh9zd0kggrf8qg7290e4cxcqxjs4l0rt"
+        ]
+      },
+      {
+        "id": "be5264ee-e5e7-4b2c-91ad-1bb8ba00ffd0",
+        "name": "Profile 10",
+        "wallets": [
+          "tb1qz5hrp9ultpqttyqzvzjy635gmskzcuc7485pqp",
+          "tb1qd79frfld74sfw5us4jt98wtl0keq23tkhqfsku"
+        ]
       }
-    ]
+    ],
+    "proxy": {
+      "enabled": true,
+      "type": "socks5",
+      "host": "res.proxy-seller.com",
+      "port": 10000,
+      "username": "8b98d75fb6266769",
+      "password": "ofKnrzR5ASyb3kYx"
+    }
   },
   "faucet": {
     "url": "https://signet257.bublina.eu.org/",

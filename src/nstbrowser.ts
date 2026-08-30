@@ -372,6 +372,60 @@ export async function listNSTProfiles(): Promise<NSTProfile[]> {
   }
 }
 
+// ─── Profile Lookup ────────────────────────────────────────────────────────
+
+/**
+ * Get a single profile by its ID.
+ * API: GET /api/v2/profiles/{id}
+ * Returns the profile object or null if not found.
+ */
+export async function getProfileById(profileId: string): Promise<NSTProfile | null> {
+  try {
+    log(`[NST] Looking up profile: ${profileId}`);
+    const res = await fetch(`${NST_API_BASE}/profiles/${profileId}`, {
+      method: 'GET',
+      headers: { 'x-api-key': getApiKey() },
+      signal: AbortSignal.timeout(5000),
+    });
+
+    log(`[NST] Get profile status: ${res.status}`);
+
+    if (!res.ok) {
+      log(`[NST] Profile ${profileId} not found (${res.status})`);
+      return null;
+    }
+
+    const data = (await res.json()) as NSTProfile;
+    log(`[NST] Profile found: ${data.name || profileId}`);
+    return data;
+  } catch (error) {
+    log(`[NST] Failed to get profile ${profileId}: ${error instanceof Error ? error.message : error}`);
+    return null;
+  }
+}
+
+/**
+ * Ensure a profile exists in NSTbrowser. Creates it if missing.
+ */
+export async function ensureProfileExists(
+  profileId: string,
+  profileName: string,
+  proxy?: ProxyConfig
+): Promise<void> {
+  const existing = await getProfileById(profileId);
+  if (!existing) {
+    log(`[NST] Profile ${profileId} not found, creating...`);
+    const newId = await createNSTProfile({
+      name: profileName,
+      fingerprint: generateUniqueFingerprint(),
+      proxy,
+    });
+    log(`[NST] Created profile ${newId} as replacement for ${profileId}`);
+  } else {
+    log(`[NST] Profile ${profileId} exists: ${existing.name}`);
+  }
+}
+
 // ─── CDP Connection ─────────────────────────────────────────────────────────
 
 /**
