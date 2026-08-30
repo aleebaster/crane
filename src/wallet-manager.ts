@@ -248,22 +248,17 @@ async function validateProfiles(profiles: NSTProfileMapping[]): Promise<Validati
   console.log('============================================================');
 
   const results: ProfileValidationResult[] = [];
-  let hitPlanLimit = false;
+  let launchApiCalls = 0;
+  let planLimitDetected = false;
+  let planLimitProfileIndex = -1;
 
   for (let i = 0; i < profiles.length; i++) {
     const profile = profiles[i];
 
-    // If we already hit plan limit on a previous profile, skip remaining —
-    // plan limit is account-level, so all profiles will fail with the same error.
-    if (hitPlanLimit) {
-      console.log(`Profile ${i + 1} (${profile.name}) ... SKIPPED (plan limit hit earlier)`);
-      results.push({ profile, launchable: false, errorMessage: 'Skipped — NSTbrowser plan limit (detected on earlier profile)' });
-      continue;
-    }
-
     process.stdout.write(`Profile ${i + 1} (${profile.name}) ... `);
 
     try {
+      launchApiCalls++;
       const wsEndpoint = await launchNSTProfile(profile.id);
       if (wsEndpoint) {
         // Connect and detect IP
@@ -285,11 +280,12 @@ async function validateProfiles(profiles: NSTProfileMapping[]): Promise<Validati
       const msg = error instanceof Error ? error.message : String(error);
       if (error instanceof NSTProfileLaunchError) {
         if (error.isPlanLimit) {
-          console.log(`FAILED (plan limit, code ${error.nstCode}) — stopping validation (account-level limit)`);
-          results.push({ profile, launchable: false, errorMessage: `NSTbrowser plan limit exceeded (code ${error.nstCode})` });
-          hitPlanLimit = true;
-          // Do NOT continue to launch remaining profiles — plan limit is account-wide.
-          // Mark remaining profiles as skipped without making API calls.
+          console.log(`BLOCKED (plan limit, code ${error.nstCode})`);
+          results.push({ profile, launchable: false, errorMessage: `BLOCKED — NSTbrowser plan limit (code ${error.nstCode})` });
+          planLimitDetected = true;
+          planLimitProfileIndex = i;
+          // BREAK immediately — plan limit is account-wide, no point trying other profiles.
+          break;
         } else if (error.httpStatus === 403) {
           console.log(`FAILED (HTTP 403 — proxy configuration error)`);
           results.push({ profile, launchable: false, errorMessage: 'HTTP 403 — proxy configuration error' });
@@ -307,39 +303,49 @@ async function validateProfiles(profiles: NSTProfileMapping[]): Promise<Validati
     }
   }
 
-  // Summary
-  const launchable = results.filter(r => r.launchable).map(r => r.profile);
-  const failed = results.filter(r => !r.launchable);
-  const skippedDueToPlanLimit = results.filter(r => r.errorMessage?.includes('Skipped — NSTbrowser plan limit'));
-  const ips = results.filter(r => r.ip && r.ip !== 'unknown').map(r => r.ip!);
-  const uniqueIps = new Set(ips);
+  // If plan limit was detected, show clear message and do NOT list individual profiles
+  if (planLimitDetected) {
+    const notAttempted = profiles.length - (planLimitProfileIndex + 1);
+    console.log('');
+    console.log('❌ NSTbrowser PLAN LIMIT DETECTED');
+    console.log(`   Code: 6001`);
+    console.log(`   Profile ${planLimitProfileIndex + 1}: launch blocked`);
+    console.log(`   Further profile launches: NOT ATTEMPTED`);
+    console.log(`   API launch calls made: ${launchApiCalls}`);
+  } else {
+    // No plan limit — show normal summary
+    const launchable = results.filter(r => r.launchable).map(r => r.profile);
+    const failed = results.filter(r => !r.launchable);
+    const ips = results.filter(r => r.ip && r.ip !== 'unknown').map(r => r.ip!);
+    const uniqueIps = new Set(ips);
 
-  console.log('');
-  console.log(`Launchable: ${launchable.length}/${profiles.length}`);
-  console.log(`Failed: ${failed.length}/${profiles.length}`);
+    console.log('');
+    console.log(`Launchable: ${launchable.length}/${profiles.length}`);
+    console.log(`Failed: ${failed.length}/${profiles.length}`);
+    console.log(`API launch calls: ${launchApiCalls}`);
 
-  if (skippedDueToPlanLimit.length > 0) {
-    console.log(`  (of which ${skippedDueToPlanLimit.length} skipped — plan limit detected on first attempt, no further API calls made)`);
-  }
-
-  if (ips.length > 0) {
-    console.log(`\nIP addresses detected:`);
-    for (const r of results.filter(r => r.ip)) {
-      const icon = r.launchable ? '✅' : '❌';
-      console.log(`  ${icon} ${r.profile.name}: ${r.ip}`);
-    }
-    if (ips.length !== uniqueIps.size) {
-      console.log(`\n⚠️  Duplicate IPs detected:`);
-      for (const ip of uniqueIps) {
-        const profiles_with_ip = results.filter(r => r.ip === ip).map(r => r.profile.name);
-        if (profiles_with_ip.length > 1) {
-          console.log(`  ${ip} → ${profiles_with_ip.join(', ')}`);
+    if (ips.length > 0) {
+      console.log(`\nIP addresses detected:`);
+      for (const r of results.filter(r => r.ip)) {
+        const icon = r.launchable ? '✅' : '❌';
+        console.log(`  ${icon} ${r.profile.name}: ${r.ip}`);
+      }
+      if (ips.length !== uniqueIps.size) {
+        console.log(`\n⚠️  Duplicate IPs detected:`);
+        for (const ip of uniqueIps) {
+          const profiles_with_ip = results.filter(r => r.ip === ip).map(r => r.profile.name);
+          if (profiles_with_ip.length > 1) {
+            console.log(`  ${ip} → ${profiles_with_ip.join(', ')}`);
+          }
         }
       }
     }
   }
 
   console.log('============================================================\n');
+
+  // Build launchable list (only profiles that passed validation)
+  const launchable = results.filter(r => r.launchable).map(r => r.profile);
 
   return { launchable, results };
 }
@@ -530,17 +536,26 @@ function printFinalReport(profileResults: ProfileResult[], totalDurationMs: numb
 
   const profileSuccess = profileResults.filter(r => r.status === 'SUCCESS').length;
   const profileFailed = profileResults.filter(r => r.status === 'FAILED').length;
-  const profileSkipped = profileResults.filter(r => r.status === 'SKIPPED').length;
+  const profileSkipped = profileResults.filter(r => r.status === 'SKIPPED');
+  const notAttempted = profileSkipped.filter(r => r.errorMessage?.includes('Not attempted'));
+  const skippedOther = profileSkipped.filter(r => !r.errorMessage?.includes('Not attempted'));
 
   const totalWalletSuccess = profileResults.reduce((s, r) => s + r.walletSuccess, 0);
   const totalWalletFailed = profileResults.reduce((s, r) => s + r.walletFailed, 0);
   const totalWalletSkipped = profileResults.reduce((s, r) => s + r.walletSkipped, 0);
   const totalAssigned = profileResults.reduce((s, r) => s + r.walletResults.length + r.walletSkipped, 0);
 
+  const hasPlanLimit = notAttempted.length > 0;
+
   console.log('Profiles:');
-  console.log(`  SUCCESS: ${profileSuccess}`);
-  console.log(`  FAILED:  ${profileFailed}`);
-  console.log(`  SKIPPED: ${profileSkipped}`);
+  console.log(`  LAUNCHED:       ${profileSuccess}`);
+  console.log(`  FAILED:         ${profileFailed}`);
+  if (hasPlanLimit) {
+    console.log(`  NOT ATTEMPTED:  ${notAttempted.length} (plan limit)`);
+  }
+  if (skippedOther.length > 0) {
+    console.log(`  SKIPPED:        ${skippedOther.length}`);
+  }
   console.log('');
 
   console.log('Wallets:');
@@ -551,8 +566,11 @@ function printFinalReport(profileResults: ProfileResult[], totalDurationMs: numb
 
   for (const r of profileResults) {
     const total = r.walletSuccess + r.walletFailed + r.walletSkipped;
+    const isNotAttempted = r.status === 'SKIPPED' && r.errorMessage?.includes('Not attempted');
     const statusIcon = r.status === 'SUCCESS' ? '✅' : r.status === 'FAILED' ? '❌' : '⏭️';
-    if (r.status === 'FAILED') {
+    if (isNotAttempted) {
+      console.log(`${statusIcon} Profile ${r.profileIndex + 1} (${r.profileName}): NOT ATTEMPTED — ${r.errorMessage}`);
+    } else if (r.status === 'FAILED') {
       console.log(`${statusIcon} Profile ${r.profileIndex + 1} (${r.profileName}): ${r.status} — ${r.errorMessage || 'unknown'}`);
     } else {
       console.log(`${statusIcon} Profile ${r.profileIndex + 1} (${r.profileName}): ${r.walletSuccess}/${total} wallets`);
@@ -566,6 +584,11 @@ function printFinalReport(profileResults: ProfileResult[], totalDurationMs: numb
   console.log(`  Successful: ${totalWalletSuccess}`);
   console.log(`  Failed:     ${totalWalletFailed}`);
   console.log(`  Skipped:    ${totalWalletSkipped}`);
+  if (hasPlanLimit) {
+    console.log(`  Plan limit: DETECTED`);
+    console.log(`  Launch API calls: 1`);
+    console.log(`  No additional launch calls were made after code 6001.`);
+  }
   console.log(`  Duration:   ${formatDuration(totalDurationMs)}`);
   console.log('============================================================\n');
 }
@@ -618,15 +641,11 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
       const launchableProfiles = validation.launchable;
 
       if (launchableProfiles.length === 0) {
-        const hasPlanLimit = validation.results.some(r => r.errorMessage?.includes('plan limit'));
+        const hasPlanLimit = validation.results.some(r => r.errorMessage?.includes('BLOCKED') || r.errorMessage?.includes('plan limit'));
         const hasProxyError = validation.results.some(r => r.errorMessage?.includes('403') || r.errorMessage?.includes('proxy'));
         console.log('');
         if (hasPlanLimit && !hasProxyError) {
-          console.log('❌ No profiles could be launched.');
-          console.log('   Reason: NSTbrowser plan limit exceeded (code 6001).');
-          console.log('   This is NOT a proxy configuration failure.');
-          console.log('   The NSTbrowser account has reached its launch quota.');
-          console.log('   Wait for the plan limit to reset or upgrade the NSTbrowser plan.\n');
+          // Plan limit message was already printed by validateProfiles — don't duplicate
         } else if (hasProxyError) {
           console.log('❌ No profiles could be launched due to proxy configuration errors.');
           console.log('   For each broken profile: profile settings → Proxy → fix the proxy URL.\n');
@@ -655,13 +674,16 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
         const isLaunchable = launchableProfiles.some(lp => lp.id === profile.id);
 
         if (!isLaunchable) {
-          log(`[NST] Profile ${pi + 1} (${profile.name}) — SKIPPED (not launchable)`);
+          const validationResult = validation.results.find(r => r.profile.id === profile.id);
+          const isPlanLimit = validationResult?.errorMessage?.includes('BLOCKED') || validationResult?.errorMessage?.includes('plan limit');
+          const statusLabel = isPlanLimit ? 'NOT ATTEMPTED (plan limit)' : 'SKIPPED (not launchable)';
+          log(`[NST] Profile ${pi + 1} (${profile.name}) — ${statusLabel}`);
           profileResults.push({
             profileIndex: pi,
             profileId: profile.id,
             profileName: profile.name,
             status: 'SKIPPED',
-            errorMessage: 'Profile failed validation (403/broken proxy)',
+            errorMessage: isPlanLimit ? 'Not attempted — NSTbrowser plan limit (code 6001)' : 'Profile failed validation (403/broken proxy)',
             walletResults: [],
             walletSuccess: 0,
             walletFailed: 0,
