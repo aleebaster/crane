@@ -239,7 +239,29 @@ async function launchNSTbrowser(config: BrowserConfig): Promise<BrowserLaunchRes
     }
   }
 
-  // Use a dummy address for initial launch; actual wallet address used later
+  // Launch the first configured profile for initial page setup
+  const firstProfile = config.nstProfiles?.[0];
+  if (firstProfile) {
+    log(`[NST] Launching initial profile: ${firstProfile.name} (${firstProfile.id})`);
+    const wsEndpoint = await launchNSTProfile(
+      firstProfile.id,
+      config.proxy?.enabled ? config.proxy : undefined
+    );
+    const browser = await connectToNSTProfile(wsEndpoint);
+    const contexts = browser.contexts();
+    const context = contexts.length > 0 ? contexts[0] : await browser.newContext();
+    const pages = context.pages();
+    const page =
+      pages.length > 0 && !pages[0].isClosed()
+        ? pages[0]
+        : await context.newPage();
+
+    activeNSTProfileId = firstProfile.id;
+
+    return { browser, context, page, profileId: firstProfile.id };
+  }
+
+  // Fallback: create on-demand
   const result = await launchProfileForWallet(
     'initial',
     config.createProfilesOnDemand !== false,
