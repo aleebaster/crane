@@ -14,6 +14,8 @@ import {
   NSTProfileLaunchError,
   NSTProfileMapping,
   launchNSTProfile,
+  fixBrokenProfiles,
+  connectToNSTProfile,
 } from './nstbrowser';
 import { FaucetConfig, processWallet, resetForNextWallet, isValidSignetAddress } from './faucet';
 import { WalletResult } from './faucet';
@@ -208,12 +210,39 @@ function logWalletMapping(profiles: NSTProfileMapping[]): void {
 
 // ─── Profile Validation ──────────────────────────────────────────────────
 
+interface ProfileValidationResult {
+  profile: NSTProfileMapping;
+  launchable: boolean;
+  ip?: string;
+  errorMessage?: string;
+}
+
+/**
+ * Detect the public IP of a launched profile by navigating to an IP detection service.
+ */
+async function detectProfileIP(page: Page): Promise<string> {
+  try {
+    const response = await page.goto('https://api.ipify.org?format=json', {
+      waitUntil: 'load',
+      timeout: 15000,
+    });
+    if (response && response.ok()) {
+      const body = await response.text();
+      const data = JSON.parse(body);
+      return data.ip || 'unknown';
+    }
+  } catch {
+    // ignore
+  }
+  return 'unknown';
+}
+
 async function validateProfiles(profiles: NSTProfileMapping[]): Promise<NSTProfileMapping[]> {
   console.log('\n============================================================');
   console.log('NST PROFILE VALIDATION');
   console.log('============================================================');
 
-  const launchable: NSTProfileMapping[] = [];
+  const results: ProfileValidationResult[] = [];
 
   for (let i = 0; i < profiles.length; i++) {
     const profile = profiles[i];
@@ -222,26 +251,66 @@ async function validateProfiles(profiles: NSTProfileMapping[]): Promise<NSTProfi
     try {
       const wsEndpoint = await launchNSTProfile(profile.id);
       if (wsEndpoint) {
-        console.log('SUCCESS');
-        launchable.push(profile);
-        // Close the test instance
+        // Connect and detect IP
+        const browser = await connectToNSTProfile(wsEndpoint);
+        const contexts = browser.contexts();
+        const context = contexts.length > 0 ? contexts[0] : await browser.newContext();
+        const pages = context.pages();
+        const page = pages.length > 0 && !pages[0].isClosed() ? pages[0] : await context.newPage();
+
+        const ip = await detectProfileIP(page);
+        console.log(`SUCCESS (IP: ${ip})`);
+        results.push({ profile, launchable: true, ip });
+
+        // Clean up
+        await browser.close();
         await closeNSTProfile(profile.id);
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (error instanceof NSTProfileLaunchError) {
         console.log(`FAILED (HTTP ${error.httpStatus})`);
+        results.push({ profile, launchable: false, errorMessage: `HTTP ${error.httpStatus}` });
       } else if (msg.includes('403')) {
         console.log('FAILED (403)');
+        results.push({ profile, launchable: false, errorMessage: '403' });
+      } else if (msg.includes('plan limits')) {
+        console.log('FAILED (plan limits)');
+        results.push({ profile, launchable: false, errorMessage: 'NSTbrowser plan limit exceeded' });
       } else {
         console.log(`FAILED (${msg.substring(0, 60)})`);
+        results.push({ profile, launchable: false, errorMessage: msg.substring(0, 100) });
       }
     }
   }
 
+  // Summary
+  const launchable = results.filter(r => r.launchable).map(r => r.profile);
+  const failed = results.filter(r => !r.launchable);
+  const ips = results.filter(r => r.ip && r.ip !== 'unknown').map(r => r.ip!);
+  const uniqueIps = new Set(ips);
+
   console.log('');
   console.log(`Launchable: ${launchable.length}/${profiles.length}`);
-  console.log(`Failed: ${profiles.length - launchable.length}/${profiles.length}`);
+  console.log(`Failed: ${failed.length}/${profiles.length}`);
+
+  if (ips.length > 0) {
+    console.log(`\nIP addresses detected:`);
+    for (const r of results.filter(r => r.ip)) {
+      const icon = r.launchable ? '✅' : '❌';
+      console.log(`  ${icon} ${r.profile.name}: ${r.ip}`);
+    }
+    if (ips.length !== uniqueIps.size) {
+      console.log(`\n⚠️  Duplicate IPs detected:`);
+      for (const ip of uniqueIps) {
+        const profiles_with_ip = results.filter(r => r.ip === ip).map(r => r.profile.name);
+        if (profiles_with_ip.length > 1) {
+          console.log(`  ${ip} → ${profiles_with_ip.join(', ')}`);
+        }
+      }
+    }
+  }
+
   console.log('============================================================\n');
 
   return launchable;
@@ -507,6 +576,12 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
       // Build and validate wallet mapping
       const profiles = buildWalletMapping(config);
       logWalletMapping(profiles);
+
+      // Auto-fix broken proxy configs before validation
+      if (config.browser.proxy?.enabled) {
+        const proxyUrl = `http://${config.browser.proxy.username}:${config.browser.proxy.password}@${config.browser.proxy.host}:${config.browser.proxy.port}`;
+        await fixBrokenProfiles(profiles, proxyUrl);
+      }
 
       // Validate all profiles can launch
       const launchableProfiles = await validateProfiles(profiles);

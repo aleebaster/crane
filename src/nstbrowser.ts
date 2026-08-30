@@ -480,6 +480,90 @@ export async function ensureProfileExists(
   }
 }
 
+// ─── Proxy Auto-Fix ───────────────────────────────────────────────────────
+
+/**
+ * Update a profile's proxy settings via NST API.
+ * API: PUT /api/v2/profiles/{profileId}/proxy
+ * This fixes broken proxy groups ("savedProxyGroup") by setting direct proxy.
+ */
+export async function updateProfileProxy(
+  profileId: string,
+  proxyUrl: string,
+): Promise<boolean> {
+  try {
+    log(`[NST] Updating proxy for profile ${profileId}...`);
+    const res = await fetch(`${NST_API_BASE}/profiles/${profileId}/proxy`, {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify({ url: proxyUrl }),
+    });
+    const raw = (await res.json()) as Record<string, unknown>;
+    const ok = !raw.err;
+    if (ok) {
+      log(`[NST] Proxy updated for ${profileId}`);
+    } else {
+      log(`[NST] Proxy update failed: ${raw.msg}`);
+    }
+    return ok;
+  } catch (error) {
+    log(`[NST] Proxy update error: ${error instanceof Error ? error.message : error}`);
+    return false;
+  }
+}
+
+/**
+ * Fix broken profiles by updating their proxy config.
+ * Profiles with "savedProxyGroup" setting referencing non-existent groups
+ * need to be switched to direct proxy via the API.
+ */
+export async function fixBrokenProfiles(
+  profiles: NSTProfileMapping[],
+  proxyUrl: string,
+): Promise<void> {
+  log(`[NST] Checking ${profiles.length} profiles for broken proxy config...`);
+
+  // Fetch all profiles from API to check their proxyConfig
+  const allProfiles = await listNSTProfiles();
+
+  for (const profile of profiles) {
+    const apiProfile = allProfiles.find(p => p.id === profile.id);
+    if (!apiProfile) {
+      log(`[NST]   ${profile.name}: not found in NSTbrowser`);
+      continue;
+    }
+
+    // Check if profile needs proxy fix by looking at proxyConfig from raw API
+    // We can't access proxyConfig through listNSTProfiles, so we fetch raw
+    try {
+      const res = await fetch(`${NST_API_BASE}/profiles?page=1&limit=50`, {
+        method: 'GET',
+        headers: { 'x-api-key': getApiKey() },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) continue;
+      const raw = (await res.json()) as Record<string, unknown>;
+      const inner = (raw.data || raw) as Record<string, unknown>;
+      const docs = (inner.docs || []) as Array<Record<string, unknown>>;
+
+      const doc = docs.find(d => (d.profileId || d.id) === profile.id);
+      if (!doc) continue;
+
+      const proxyConfig = (doc.proxyConfig || {}) as Record<string, unknown>;
+      const setting = proxyConfig.setting as string;
+
+      if (setting === 'savedProxyGroup' || !setting) {
+        log(`[NST]   ${profile.name}: broken proxy (setting=${setting || 'null'}), fixing...`);
+        await updateProfileProxy(profile.id, proxyUrl);
+      } else {
+        log(`[NST]   ${profile.name}: proxy OK (setting=${setting})`);
+      }
+    } catch {
+      // Skip on error — validation will catch it later
+    }
+  }
+}
+
 // ─── Profile Verification ─────────────────────────────────────────────────
 
 /**
