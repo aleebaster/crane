@@ -24,6 +24,14 @@
       "attemptsBeforeRotation": 3,
       "maxFingerprints": 10
     },
+    "proxy": {
+      "enabled": true,
+      "type": "socks5",
+      "host": "res.proxy-seller.com",
+      "port": 10000,
+      "username": "8b98d75fb6266769",
+      "password": "ofKnrzR5ASyb3kYx"
+    },
     "nstProfiles": [
       {
         "id": "profile_1",

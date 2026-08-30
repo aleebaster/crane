@@ -18,6 +18,7 @@ import {
   connectToNSTProfile,
 } from './nstbrowser';
 import { ProfilePool } from './profile-pool';
+import { ProxyConfig, testProxy } from './proxy';
 
 // ─── Config Types ───────────────────────────────────────────────────────────
 
@@ -31,6 +32,7 @@ export interface BrowserConfig {
   profileStrategy?: ProfileStrategy;
   nstProfiles?: NSTProfileMapping[];
   fingerprintRotation?: Partial<FingerprintRotationConfig>;
+  proxy?: ProxyConfig;
 }
 
 export interface BrowserLaunchResult {
@@ -203,8 +205,23 @@ async function launchNSTbrowser(config: BrowserConfig): Promise<BrowserLaunchRes
     log(`[NST] FingerprintRotator: pool=${fingerprintRotator.poolSize}`);
   }
 
+  // Test proxy if configured
+  if (config.proxy?.enabled) {
+    log(`[NST] Proxy configured: ${config.proxy.type}://${config.proxy.host}:${config.proxy.port}`);
+    const proxyIp = await testProxy(config.proxy);
+    if (proxyIp) {
+      log(`[NST] Proxy working, outbound IP: ${proxyIp}`);
+    } else {
+      log('[NST] WARNING: Proxy test failed, continuing without proxy');
+    }
+  }
+
   // Use a dummy address for initial launch; actual wallet address used later
-  const result = await launchProfileForWallet('initial', config.createProfilesOnDemand !== false);
+  const result = await launchProfileForWallet(
+    'initial',
+    config.createProfilesOnDemand !== false,
+    config.proxy?.enabled ? config.proxy : undefined
+  );
 
   activeNSTProfileId = result.profileId;
 

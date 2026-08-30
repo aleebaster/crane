@@ -31,7 +31,15 @@
     "profileDirectory": "Profile 2",
     "headless": false,
     "useNSTbrowser": true,
-    "createProfilesOnDemand": true
+    "createProfilesOnDemand": true,
+    "proxy": {
+      "enabled": true,
+      "type": "socks5",
+      "host": "res.proxy-seller.com",
+      "port": 10000,
+      "username": "8b98d75fb6266769",
+      "password": "ofKnrzR5ASyb3kYx"
+    }
   },
   "faucet": {
     "url": "https://signet257.bublina.eu.org/",

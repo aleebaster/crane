@@ -2,6 +2,7 @@ import { chromium, Browser, BrowserContext, Page } from 'playwright-core';
 import { log } from './logger';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { ProxyConfig, getNSTProxyPayload } from './proxy';
 
 const execAsync = promisify(exec);
 
@@ -56,7 +57,7 @@ export interface NSTProfile {
 export interface NSTProfileConfig {
   name: string;
   fingerprint?: Partial<NSTFingerprint>;
-  proxy?: string;
+  proxy?: string | ProxyConfig;
 }
 
 export interface NSTBrowserLaunchResult {
@@ -189,7 +190,11 @@ export async function createNSTProfile(config: NSTProfileConfig): Promise<string
   };
 
   if (config.proxy) {
-    (body as Record<string, unknown>).proxy = config.proxy;
+    if (typeof config.proxy === 'string') {
+      (body as Record<string, unknown>).proxy = config.proxy;
+    } else {
+      (body as Record<string, unknown>).proxy = getNSTProxyPayload(config.proxy);
+    }
   }
 
   const res = await fetch(`${NST_API_BASE}/profiles`, {
@@ -213,14 +218,20 @@ export async function createNSTProfile(config: NSTProfileConfig): Promise<string
  * Launch a profile via the browser API and return CDP WebSocket endpoint.
  * API: POST /api/v2/browsers/
  */
-export async function launchNSTProfile(profileId: string): Promise<string> {
+export async function launchNSTProfile(profileId: string, proxy?: ProxyConfig): Promise<string> {
+  const launchBody: Record<string, unknown> = {
+    profileId,
+    headless: false,
+  };
+  if (proxy) {
+    launchBody.proxy = getNSTProxyPayload(proxy);
+    log(`[NST] Launching profile ${profileId} with proxy ${proxy.host}:${proxy.port}`);
+  }
+
   const startRes = await fetch(`${NST_API_BASE}/browsers/`, {
     method: 'POST',
     headers: authHeaders(),
-    body: JSON.stringify({
-      profileId,
-      headless: false,
-    }),
+    body: JSON.stringify(launchBody),
   });
 
   if (!startRes.ok) {
@@ -333,7 +344,8 @@ export async function connectToNSTProfile(wsEndpoint: string): Promise<Browser> 
  */
 export async function launchProfileForWallet(
   address: string,
-  createOnDemand: boolean = true
+  createOnDemand: boolean = true,
+  proxy?: ProxyConfig
 ): Promise<NSTBrowserLaunchResult> {
   await ensureNSTRunning();
 
@@ -351,13 +363,14 @@ export async function launchProfileForWallet(
     profileId = await createNSTProfile({
       name: profileName,
       fingerprint: generateUniqueFingerprint(),
+      proxy,
     });
     log(`Created new NST profile ${profileId} for ${shortAddr}...`);
   } else {
     throw new Error(`No NST profile found for address starting with ${shortAddr}`);
   }
 
-  const wsEndpoint = await launchNSTProfile(profileId);
+  const wsEndpoint = await launchNSTProfile(profileId, proxy);
   const browser = await connectToNSTProfile(wsEndpoint);
 
   const contexts = browser.contexts();
