@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
+    "dev:nst": "tsx src/index.ts config/config.nst.json",
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest"

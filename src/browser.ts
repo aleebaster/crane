@@ -3,19 +3,33 @@ import { log } from './logger';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
+import {
+  ensureNSTRunning,
+  launchProfileForWallet,
+  closeNSTProfile,
+  isNSTRunning,
+  NSTBrowserLaunchResult,
+} from './nstbrowser';
 
 export interface BrowserConfig {
   userDataDir: string;
   profileDirectory: string;
   headless: boolean;
   chromePath?: string;
+  useNSTbrowser?: boolean;
+  createProfilesOnDemand?: boolean;
 }
 
 export interface BrowserLaunchResult {
   browser: Browser;
   context: BrowserContext;
   page: Page;
+  profileId?: string;
 }
+
+// ─── Active NST state ───────────────────────────────────────────────────────
+
+let activeNSTProfileId: string | null = null;
 
 function findChromePath(): string | undefined {
   const { platform } = process;
@@ -105,7 +119,9 @@ Start-Process -FilePath '${chromePath}' -ArgumentList @(
   });
 }
 
-export async function launchBrowser(config: BrowserConfig): Promise<BrowserLaunchResult> {
+// ─── Chrome CDP Launch (existing) ───────────────────────────────────────────
+
+async function launchChromeCDP(config: BrowserConfig): Promise<BrowserLaunchResult> {
   const chromePath = config.chromePath || findChromePath();
   if (!chromePath) {
     throw new Error(
@@ -140,4 +156,66 @@ export async function launchBrowser(config: BrowserConfig): Promise<BrowserLaunc
   log(`Initial page URL: ${page.url()}`);
 
   return { browser, context, page };
+}
+
+// ─── NSTbrowser Launch (new) ────────────────────────────────────────────────
+
+async function launchNSTbrowser(config: BrowserConfig): Promise<BrowserLaunchResult> {
+  log('NSTbrowser mode enabled');
+
+  const nstRunning = await isNSTRunning();
+  if (!nstRunning) {
+    log('Starting NSTbrowser...');
+    await ensureNSTRunning();
+  }
+
+  // Use a dummy address for initial launch; actual wallet address used later
+  const result = await launchProfileForWallet('initial', config.createProfilesOnDemand !== false);
+
+  activeNSTProfileId = result.profileId;
+
+  return {
+    browser: result.browser,
+    context: result.context,
+    page: result.page,
+    profileId: result.profileId,
+  };
+}
+
+// ─── Public API ─────────────────────────────────────────────────────────────
+
+export async function launchBrowser(config: BrowserConfig): Promise<BrowserLaunchResult> {
+  if (config.useNSTbrowser) {
+    return launchNSTbrowser(config);
+  }
+  return launchChromeCDP(config);
+}
+
+export async function closeBrowser(
+  browser: Browser | null,
+  _config?: BrowserConfig
+): Promise<void> {
+  try {
+    if (activeNSTProfileId) {
+      await closeNSTProfile(activeNSTProfileId);
+      activeNSTProfileId = null;
+    }
+    if (browser) {
+      await browser.close();
+    }
+  } catch (error) {
+    console.error('[Browser] Error during close:', error);
+  }
+}
+
+export async function checkNSTStatus(): Promise<boolean> {
+  try {
+    return await isNSTRunning();
+  } catch {
+    return false;
+  }
+}
+
+export function resetActiveNSTProfile(): void {
+  activeNSTProfileId = null;
 }

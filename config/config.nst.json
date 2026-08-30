@@ -1,0 +1,40 @@
+{
+  "wallets": [
+    "tb1plk37agr9yx22q0z2v7d2u4szz0zxye0watw48ders4e6q627f2qsrr566r",
+    "tb1q6zsvng55veu2cvrg3qc6rsrg6tx3fya9r6gkal",
+    "tb1qdzsjsdyflpc835na68prmrtplatw7t0yj4d8ae",
+    "tb1qvtx8kf2cchvx37mdhdgzhufdde6d3fgyxr8ham",
+    "tb1qmmugzmng9qhysjwy7yx88hr3ygf3056hg3ksug",
+    "tb1qg5dcfx0zr68u8v8j3mfrzqvztzgwuxe6rpwz9a",
+    "tb1qv40urn9dku9evavgfdx4suww0x99898h4urvs3",
+    "tb1qs2vf97vd6h6dmmahqrx09qk0naef8n9kd94dtl",
+    "tb1qgpsm0ywalc8jcaxjev2lscr9eteax2r3we5qxw",
+    "tb1q7wjyrznfd2t5tk32wa9fytqq50w3qawxw42haz",
+    "tb1qcutzxgtcgx52ay5n2lrdtw77hmstgmutm6nffc",
+    "tb1q8ms0fyyjp6vq4q25se8fzslmtjsu3v97xu42dw",
+    "tb1q94vj7qkjd6zh4u3su0pqvgm4d39xxt9jhywj4z",
+    "tb1qdyqnzmkqqqsftzzpx8qr539rcjt38yt2y50qqc",
+    "tb1qjykkt0jjnevx605mkpjp8hg8uaupyxsz7zr3q2",
+    "tb1q44fdggvn08xwew8nqh9ly8hjskdvyretkd0svw",
+    "tb1q7dj9kk2nu82ecjckugrcuhwuc9k988rydvz9zh",
+    "tb1qa0k54kfqpj5uug2p5s8g59t7ffgzykakvcvyjv",
+    "tb1q97caq9unskjly7dk847wrxx2vgpn3tkge3wfhw",
+    "tb1q8zun6rhy5w9wh9acf2p2kmll67m0lfte297n7q",
+    "tb1qwsjdjryslpc8q4rv8gwme7hl94ksdzh8sfn7jx",
+    "tb1q3hk3h5u8mr2mvh46sk2fl4z6q4zxur2p07elug",
+    "tb1qvq7cs5jwa95d768qhkpvn2w8y2e0utjdhyypd3",
+    "tb1qxr7nkyga3tdw3qjr32mrf0splxu4htjgusg2z6",
+    "tb1qhly5d67v3cuhd69l5mhputrdxfd38a2dypr6r4"
+  ],
+  "browser": {
+    "userDataDir": "C:\\Users\\andre\\AppData\\Local\\Google\\Chrome\\User Data",
+    "profileDirectory": "Profile 2",
+    "headless": false,
+    "useNSTbrowser": true,
+    "createProfilesOnDemand": true
+  },
+  "faucet": {
+    "url": "https://signet257.bublina.eu.org/",
+    "walletTimeoutMs": 300000
+  }
+}
