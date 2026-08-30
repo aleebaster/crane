@@ -103,13 +103,16 @@ export interface FingerprintRotationConfig {
  */
 export async function isNSTRunning(): Promise<boolean> {
   try {
+    log(`[NST] Checking API at ${NST_API_BASE}/browsers...`);
     const res = await fetch(`${NST_API_BASE}/browsers`, {
       method: 'GET',
       headers: { 'x-api-key': process.env.NST_API_KEY || '' },
-      signal: AbortSignal.timeout(2000),
+      signal: AbortSignal.timeout(5000),
     });
+    log(`[NST] API check status: ${res.status}`);
     return res.ok;
-  } catch {
+  } catch (error) {
+    log(`[NST] API check failed: ${error instanceof Error ? error.message : error}`);
     return false;
   }
 }
@@ -153,7 +156,10 @@ export async function ensureNSTRunning(): Promise<void> {
  * API: POST /api/v2/profiles
  */
 export async function createNSTProfile(config: NSTProfileConfig): Promise<string> {
-  const body = {
+  log(`[NST] Creating profile: ${config.name}`);
+  log(`[NST] API endpoint: ${NST_API_BASE}/profiles`);
+
+  const body: Record<string, unknown> = {
     name: config.name,
     platform: 'Windows',
     kernelMilestone: '140',
@@ -191,26 +197,38 @@ export async function createNSTProfile(config: NSTProfileConfig): Promise<string
 
   if (config.proxy) {
     if (typeof config.proxy === 'string') {
-      (body as Record<string, unknown>).proxy = config.proxy;
+      body.proxy = config.proxy;
+      log(`[NST] Using proxy (string): ${config.proxy}`);
     } else {
-      (body as Record<string, unknown>).proxy = getNSTProxyPayload(config.proxy);
+      body.proxy = getNSTProxyPayload(config.proxy);
+      log(`[NST] Using proxy: ${config.proxy.type}://${config.proxy.host}:${config.proxy.port}`);
     }
   }
 
+  log(`[NST] Sending request...`);
   const res = await fetch(`${NST_API_BASE}/profiles`, {
     method: 'POST',
     headers: authHeaders(),
     body: JSON.stringify(body),
   });
 
+  log(`[NST] Response status: ${res.status} ${res.statusText}`);
+
   if (!res.ok) {
     const text = await res.text();
+    log(`[NST] Error response body: ${text}`);
     throw new Error(`Failed to create NST profile: ${res.status} ${text}`);
   }
 
   const data = (await res.json()) as Record<string, unknown>;
+  log(`[NST] Response data: ${JSON.stringify(data)}`);
+
   const profileId = (data.profileId || data.id) as string;
-  log(`NST profile created: ${profileId} (${config.name})`);
+  if (!profileId) {
+    log(`[NST] WARNING: No profileId or id in response`);
+    log(`[NST] Available keys: ${Object.keys(data).join(', ')}`);
+  }
+  log(`[NST] Profile created: ${profileId} (${config.name})`);
   return profileId;
 }
 
@@ -219,45 +237,67 @@ export async function createNSTProfile(config: NSTProfileConfig): Promise<string
  * API: POST /api/v2/browsers/
  */
 export async function launchNSTProfile(profileId: string, proxy?: ProxyConfig): Promise<string> {
+  log(`[NST] Launching profile: ${profileId}`);
+  log(`[NST] API endpoint: ${NST_API_BASE}/browsers/`);
+
   const launchBody: Record<string, unknown> = {
     profileId,
     headless: false,
   };
   if (proxy) {
     launchBody.proxy = getNSTProxyPayload(proxy);
-    log(`[NST] Launching profile ${profileId} with proxy ${proxy.host}:${proxy.port}`);
+    log(`[NST] Using proxy: ${proxy.type}://${proxy.host}:${proxy.port}`);
   }
 
+  log(`[NST] Sending launch request...`);
   const startRes = await fetch(`${NST_API_BASE}/browsers/`, {
     method: 'POST',
     headers: authHeaders(),
     body: JSON.stringify(launchBody),
   });
 
+  log(`[NST] Launch response status: ${startRes.status} ${startRes.statusText}`);
+
   if (!startRes.ok) {
     const text = await startRes.text();
+    log(`[NST] Launch error body: ${text}`);
     throw new Error(`Failed to start NST browser for profile ${profileId}: ${startRes.status} ${text}`);
   }
 
   const startData = (await startRes.json()) as Record<string, unknown>;
+  log(`[NST] Launch response: ${JSON.stringify(startData)}`);
+
   const browserId = startData.id as string;
+  if (!browserId) {
+    log(`[NST] WARNING: No browser id in launch response`);
+    log(`[NST] Available keys: ${Object.keys(startData).join(', ')}`);
+  }
+  log(`[NST] Browser started: ${browserId}`);
 
-  log(`NST browser started: ${browserId}`);
-
+  log(`[NST] Getting debugger endpoint...`);
   const debugRes = await fetch(`${NST_API_BASE}/browsers/${browserId}/debugger`, {
     method: 'GET',
     headers: { 'x-api-key': getApiKey() },
   });
 
+  log(`[NST] Debugger response status: ${debugRes.status}`);
+
   if (!debugRes.ok) {
     const text = await debugRes.text();
+    log(`[NST] Debugger error body: ${text}`);
     throw new Error(`Failed to get debugger for browser ${browserId}: ${debugRes.status} ${text}`);
   }
 
   const debugData = (await debugRes.json()) as Record<string, unknown>;
-  const wsEndpoint = (debugData.wsUrl || debugData.webSocketDebuggerUrl || debugData.url) as string;
+  log(`[NST] Debugger response: ${JSON.stringify(debugData)}`);
 
-  log(`NST profile ${profileId} launched: ${wsEndpoint}`);
+  const wsEndpoint = (debugData.wsUrl || debugData.webSocketDebuggerUrl || debugData.url) as string;
+  if (!wsEndpoint) {
+    log(`[NST] WARNING: No WebSocket endpoint in debugger response`);
+    log(`[NST] Available keys: ${Object.keys(debugData).join(', ')}`);
+  }
+
+  log(`[NST] Profile ${profileId} launched: ${wsEndpoint}`);
   return wsEndpoint;
 }
 
@@ -312,12 +352,19 @@ export async function deleteNSTProfile(profileId: string): Promise<void> {
  */
 export async function listNSTProfiles(): Promise<NSTProfile[]> {
   try {
+    log(`[NST] Listing profiles at ${NST_API_BASE}/profiles...`);
     const res = await fetch(`${NST_API_BASE}/profiles`, {
       method: 'GET',
       headers: { 'x-api-key': getApiKey() },
     });
-    if (!res.ok) return [];
+    log(`[NST] List profiles status: ${res.status}`);
+    if (!res.ok) {
+      const text = await res.text();
+      log(`[NST] List profiles error: ${text}`);
+      return [];
+    }
     const data = (await res.json()) as { profiles?: NSTProfile[] };
+    log(`[NST] Found ${(data.profiles || []).length} profiles`);
     return data.profiles || [];
   } catch (error) {
     console.error('[NST] Failed to list profiles:', error);
