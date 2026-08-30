@@ -20,6 +20,7 @@ import {
   createNSTProfile,
   generateUniqueFingerprint,
   verifyProfiles,
+  NSTProfileLaunchError,
 } from './nstbrowser';
 import { ProfilePool } from './profile-pool';
 import { ProxyConfig, testProxy } from './proxy';
@@ -452,4 +453,40 @@ export function resetActiveNSTProfile(): void {
   profileManager = null;
   fingerprintRotator = null;
   profilePool = null;
+}
+
+// ─── Isolated Profile Session ──────────────────────────────────────────────
+
+/**
+ * Fully isolated profile session — no global state.
+ * Use this for per-profile processing in the main loop.
+ *
+ * Returns browser + page, caller must close browser when done.
+ */
+export async function launchIsolatedProfile(profileId: string): Promise<BrowserLaunchResult> {
+  log(`[NST] Launching isolated profile: ${profileId}`);
+  const wsEndpoint = await launchNSTProfile(profileId);
+  const browser = await connectToNSTProfile(wsEndpoint);
+  const contexts = browser.contexts();
+  const context = contexts.length > 0 ? contexts[0] : await browser.newContext();
+  const pages = context.pages();
+  const page = pages.length > 0 && !pages[0].isClosed() ? pages[0] : await context.newPage();
+  return { browser, context, page, profileId };
+}
+
+/**
+ * Safely close an isolated profile session.
+ * Cleans up Playwright connection and NSTbrowser instance.
+ */
+export async function closeIsolatedProfile(browser: Browser | null, profileId?: string): Promise<void> {
+  try {
+    if (browser) {
+      await browser.close();
+    }
+  } catch {
+    // ignore close errors
+  }
+  if (profileId) {
+    await closeNSTProfile(profileId);
+  }
 }

@@ -177,7 +177,14 @@ describe('launchNSTProfile', () => {
   it('should throw on launch failure', async () => {
     mockFetch(() => errorResponse(404, 'Profile not found'));
 
-    await expect(launchNSTProfile('missing')).rejects.toThrow('Failed to start NST browser');
+    // Retry logic: 404 is transient, so it retries 3 times with backoff (2s+5s=7s)
+    await expect(launchNSTProfile('missing')).rejects.toThrow();
+  }, 15000);
+
+  it('should throw immediately on 403 (permanent failure)', async () => {
+    mockFetch(() => errorResponse(403, 'request profile failed with code: 403'));
+
+    await expect(launchNSTProfile('broken')).rejects.toThrow('403');
   });
 });
 

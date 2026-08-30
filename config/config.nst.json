@@ -24,20 +24,42 @@
     "tb1qh9j5wdy9zfzvm2sddelerf76neqrss62zx07yv",
     "tb1qu7pmrtenpuh9wczcpa3exqsph62rc2d2vp0lhd",
     "tb1qk5yxureusfx05s44t9pf5qglmngehfqze4jskt",
-    "tb1qsnntf8znsykqu9f6vp45eq4h2398z27egjyhqn"
+    "tb1qsnntf8znsykqu9f6vp45eq4h2398z27egjyhqn",
+    "tb1qnx9224vzdzmk3xzhps0tj5rhx3nzf542quw867",
+    "tb1qf88ydjdgf2cqtwjmpwgfv8kn6q3njjuvcj43mp",
+    "tb1qhtt5jjgz0sd3zf7e7r0zqwspmsgzaeaqrywm0n",
+    "tb1q5lu05edwl3mxegyt6ta7czxm7t6sq7dxleevqd",
+    "tb1qxwnsy4eavufsqa87j0cnpsl34yy420734uhct2",
+    "tb1qpuzhr596p3c4jpfnn5573ys9g5wvqh867n43su",
+    "tb1q6kxxahzxywu4m088e7s83jguugpdzrmuptxr6z",
+    "tb1q2mj0dddrc5sl9sezen8g0n28lknwddjnpk9pp3",
+    "tb1qzktsjm06rzyxfmjcwhgnyvjdm4q9rhtmt9ffe7",
+    "tb1qclqkga4av0wygt26yf8a8kgdwv68j4hdng2nhx",
+    "tb1qtdqq3lxhl3v2962jdjz89ch2fd3tlte7hxeha0",
+    "tb1qt948hs6d3c3fwvsuxpuxzfs854j5zcpt98ec2y",
+    "tb1q4f5zlusrpxmh4yrngxmdw6hwrx4fzsx20v5m58",
+    "tb1qgdj3glnqwpweyefc4xwu47zr9pa3l7203tps7s",
+    "tb1qw9g74dvkwzjuj398a67pgsaaay44r3ajx2fdyx",
+    "tb1qzzacmslwgjcr54nh0xam8dg90q7gx4vrq7v9s0",
+    "tb1qe6kqs0rec4hny8kdg8zkmcf9xscpjkrv3g3amr",
+    "tb1qghsj5tr37ky9ncz7s6as4mq2uplgsur2q35qx4",
+    "tb1qj5szkvrwxvvvck9u3qduuysdqyct53ftjhn3zd",
+    "tb1qx82nvkru7q4e0cuayzwvr3rty9r7smj8jvdnl4",
+    "tb1q8sac7t439t2630amweah32e3e708zyrrrk0x64",
+    "tb1q4zd8f8qm5yt22wptqwytwqaps6hmsg5pq2ytkn",
+    "tb1qx0enr58k87amssf2l9wynguafpcsczqcynz5dz",
+    "tb1q29wpxkgj2sphl6w8nxukjdsdcnmc6ftlx5u504",
+    "tb1plk37agr9yx22q0z2v7d2u4szz0zxye0watw48ders4e6q627f2qsrr566r"
   ],
   "browser": {
-    "userDataDir": "C:\\Users\\andre\\AppData\\Local\\Google\\Chrome\\User Data",
-    "profileDirectory": "Profile 2",
-    "headless": false,
     "useNSTbrowser": true,
+    "nstApiBase": "http://localhost:8848/api/v2",
+    "headless": false,
     "createProfilesOnDemand": false,
     "profileStrategy": "round_robin",
     "fingerprintRotation": {
       "enabled": true,
-      "rotationStrategy": "per_request",
-      "attemptsBeforeRotation": 3,
-      "maxFingerprints": 10
+      "rotationStrategy": "per_request"
     },
     "nstProfiles": [
       {
@@ -46,42 +68,52 @@
         "wallets": [
           "tb1qt976z56ssnzhs2a9kkfergn33xdhrp6zad8s0k",
           "tb1q8kjsfan2vuntsu4g2h3c35g4zxq3hssye7nvpl",
-          "tb1qmx5unsg33ae608hk52zxj07fffpnhjkjn8fvpu"
+          "tb1qd7mwgjp29szuduc0zsp2gx538xemlhjnx3xmzc",
+          "tb1qrsvjtgz3c4t80yhdxtpn9na02kd5uhdxus7v60",
+          "tb1q4dzh63z5j0r0dk76zepc03t4wdu0ruk6vxph95"
         ]
       },
       {
         "id": "9d605624-911a-4eef-91fe-0b3db5e5faed",
         "name": "Profile 2",
         "wallets": [
-          "tb1qd7mwgjp29szuduc0zsp2gx538xemlhjnx3xmzc",
-          "tb1qrsvjtgz3c4t80yhdxtpn9na02kd5uhdxus7v60",
-          "tb1qh9j5wdy9zfzvm2sddelerf76neqrss62zx07yv"
+          "tb1qzlsfvw6v50mnrjlv6ek87tqyrunpsmh788w6se",
+          "tb1qa0pdlfd8md7c6gwcrcr377qmdlrdhlqc8yz7sa",
+          "tb1q5583vmpk486uhzlkfqqg7axum72phc4wewv7qv",
+          "tb1qamlmfzume0efp5dl9h2jamf2k0ax8plll8ksds",
+          "tb1q894cvmnxmyfd77dewhn45f30hmfmm4yvduvgc8"
         ]
       },
       {
         "id": "8f0e2848-de70-4fc1-84c6-6943cab5109c",
         "name": "Profile 3",
         "wallets": [
-          "tb1q4dzh63z5j0r0dk76zepc03t4wdu0ruk6vxph95",
-          "tb1qzlsfvw6v50mnrjlv6ek87tqyrunpsmh788w6se",
-          "tb1qu7pmrtenpuh9wczcpa3exqsph62rc2d2vp0lhd"
+          "tb1q70rj97dyq99qrxks4g52pvejzmap9nredqxnj3",
+          "tb1q44rht772z2rrlw92spfdepclqs5ynpcxwdmwg2",
+          "tb1qz79mczujmwersx0fsulxfeqs383avg5088tdv7",
+          "tb1q8dflh2k6m833healdnvclydrr03rw3auwxafsu",
+          "tb1qvkr5q54s5dn735c6za09w4w2ns4scxzd433hws"
         ]
       },
       {
         "id": "4d598095-53f1-458e-8a93-7864fe3ea4e5",
         "name": "Profile 4",
         "wallets": [
-          "tb1qa0pdlfd8md7c6gwcrcr377qmdlrdhlqc8yz7sa",
-          "tb1q5583vmpk486uhzlkfqqg7axum72phc4wewv7qv",
-          "tb1qk5yxureusfx05s44t9pf5qglmngehfqze4jskt"
+          "tb1qk9lrrym6dtuse9ne98drqt985g0gr65jrn7hzy",
+          "tb1q46gqmksn5m0hrq3mdude3rqjtygeevmmcg0n37",
+          "tb1q5l0t85kh9zd0kggrf8qg7290e4cxcqxjs4l0rt",
+          "tb1qz5hrp9ultpqttyqzvzjy635gmskzcuc7485pqp",
+          "tb1qd79frfld74sfw5us4jt98wtl0keq23tkhqfsku"
         ]
       },
       {
         "id": "944ef6af-86f5-4a8f-8934-0bbb44d1aa68",
         "name": "Profile 5",
         "wallets": [
-          "tb1qamlmfzume0efp5dl9h2jamf2k0ax8plll8ksds",
-          "tb1q894cvmnxmyfd77dewhn45f30hmfmm4yvduvgc8",
+          "tb1qmx5unsg33ae608hk52zxj07fffpnhjkjn8fvpu",
+          "tb1qh9j5wdy9zfzvm2sddelerf76neqrss62zx07yv",
+          "tb1qu7pmrtenpuh9wczcpa3exqsph62rc2d2vp0lhd",
+          "tb1qk5yxureusfx05s44t9pf5qglmngehfqze4jskt",
           "tb1qsnntf8znsykqu9f6vp45eq4h2398z27egjyhqn"
         ]
       },
@@ -89,40 +121,55 @@
         "id": "d17c5cc7-c7dc-468e-b1f6-b46ecb77f17f",
         "name": "Profile 6",
         "wallets": [
-          "tb1q70rj97dyq99qrxks4g52pvejzmap9nredqxnj3",
-          "tb1q44rht772z2rrlw92spfdepclqs5ynpcxwdmwg2"
+          "tb1qnx9224vzdzmk3xzhps0tj5rhx3nzf542quw867",
+          "tb1qf88ydjdgf2cqtwjmpwgfv8kn6q3njjuvcj43mp",
+          "tb1qhtt5jjgz0sd3zf7e7r0zqwspmsgzaeaqrywm0n",
+          "tb1q5lu05edwl3mxegyt6ta7czxm7t6sq7dxleevqd",
+          "tb1qxwnsy4eavufsqa87j0cnpsl34yy420734uhct2"
         ]
       },
       {
         "id": "3f07e5dc-6d8a-488b-8b01-27d79a7b4e4a",
         "name": "Profile 7",
         "wallets": [
-          "tb1qz79mczujmwersx0fsulxfeqs383avg5088tdv7",
-          "tb1q8dflh2k6m833healdnvclydrr03rw3auwxafsu"
+          "tb1qpuzhr596p3c4jpfnn5573ys9g5wvqh867n43su",
+          "tb1q6kxxahzxywu4m088e7s83jguugpdzrmuptxr6z",
+          "tb1q2mj0dddrc5sl9sezen8g0n28lknwddjnpk9pp3",
+          "tb1qzktsjm06rzyxfmjcwhgnyvjdm4q9rhtmt9ffe7",
+          "tb1qclqkga4av0wygt26yf8a8kgdwv68j4hdng2nhx"
         ]
       },
       {
         "id": "5d6bbf60-329e-425d-b008-6571be687d81",
         "name": "Profile 8",
         "wallets": [
-          "tb1qvkr5q54s5dn735c6za09w4w2ns4scxzd433hws",
-          "tb1qk9lrrym6dtuse9ne98drqt985g0gr65jrn7hzy"
+          "tb1qtdqq3lxhl3v2962jdjz89ch2fd3tlte7hxeha0",
+          "tb1qt948hs6d3c3fwvsuxpuxzfs854j5zcpt98ec2y",
+          "tb1q4f5zlusrpxmh4yrngxmdw6hwrx4fzsx20v5m58",
+          "tb1qgdj3glnqwpweyefc4xwu47zr9pa3l7203tps7s",
+          "tb1qw9g74dvkwzjuj398a67pgsaaay44r3ajx2fdyx"
         ]
       },
       {
         "id": "884206c8-6335-432f-a858-1daab0b1269f",
         "name": "Profile 9",
         "wallets": [
-          "tb1q46gqmksn5m0hrq3mdude3rqjtygeevmmcg0n37",
-          "tb1q5l0t85kh9zd0kggrf8qg7290e4cxcqxjs4l0rt"
+          "tb1qzzacmslwgjcr54nh0xam8dg90q7gx4vrq7v9s0",
+          "tb1qe6kqs0rec4hny8kdg8zkmcf9xscpjkrv3g3amr",
+          "tb1qghsj5tr37ky9ncz7s6as4mq2uplgsur2q35qx4",
+          "tb1qj5szkvrwxvvvck9u3qduuysdqyct53ftjhn3zd",
+          "tb1qx82nvkru7q4e0cuayzwvr3rty9r7smj8jvdnl4"
         ]
       },
       {
         "id": "be5264ee-e5e7-4b2c-91ad-1bb8ba00ffd0",
         "name": "Profile 10",
         "wallets": [
-          "tb1qz5hrp9ultpqttyqzvzjy635gmskzcuc7485pqp",
-          "tb1qd79frfld74sfw5us4jt98wtl0keq23tkhqfsku"
+          "tb1q8sac7t439t2630amweah32e3e708zyrrrk0x64",
+          "tb1q4zd8f8qm5yt22wptqwytwqaps6hmsg5pq2ytkn",
+          "tb1qx0enr58k87amssf2l9wynguafpcsczqcynz5dz",
+          "tb1q29wpxkgj2sphl6w8nxukjdsdcnmc6ftlx5u504",
+          "tb1plk37agr9yx22q0z2v7d2u4szz0zxye0watw48ders4e6q627f2qsrr566r"
         ]
       }
     ],

@@ -238,45 +238,65 @@ export async function createNSTProfile(config: NSTProfileConfig): Promise<string
  * Launch a profile via the browser API and return CDP WebSocket endpoint.
  * API: POST /api/v2/browsers/{profileId}
  *
- * NOTE: Do NOT pass proxy override in the launch body — profiles already
- * have proxy configured internally in NSTbrowser. Passing proxy override
- * causes a 403 error.
+ * Retries up to LAUNCH_MAX_RETRIES times with backoff for transient errors.
+ * Throws NSTProfileLaunchError for permanent failures (403, 400).
  */
 export async function launchNSTProfile(profileId: string, _proxy?: ProxyConfig): Promise<string> {
-  log(`[NST] Launching profile: ${profileId}`);
-  log(`[NST] API endpoint: ${NST_API_BASE}/browsers/${profileId}`);
+  let lastError: Error | null = null;
 
-  // NOTE: Proxy is NOT sent here — it's already configured inside NSTbrowser profiles
-  log(`[NST] Sending launch request (no proxy override)...`);
-  const startRes = await fetch(`${NST_API_BASE}/browsers/${profileId}`, {
-    method: 'POST',
-    headers: authHeaders(),
-  });
+  for (let attempt = 1; attempt <= LAUNCH_MAX_RETRIES; attempt++) {
+    try {
+      log(`[NST] Launching profile ${profileId} (attempt ${attempt}/${LAUNCH_MAX_RETRIES})...`);
 
-  log(`[NST] Launch response status: ${startRes.status} ${startRes.statusText}`);
+      const startRes = await fetch(`${NST_API_BASE}/browsers/${profileId}`, {
+        method: 'POST',
+        headers: authHeaders(),
+      });
 
-  if (!startRes.ok) {
-    const text = await startRes.text();
-    log(`[NST] Launch error body: ${text}`);
-    throw new Error(`Failed to start NST browser for profile ${profileId}: ${startRes.status} ${text}`);
+      log(`[NST] Launch response: ${startRes.status} ${startRes.statusText}`);
+
+      if (!startRes.ok) {
+        const text = await startRes.text();
+        log(`[NST] Launch error body: ${text}`);
+
+        const err = new NSTProfileLaunchError(profileId, startRes.status, text);
+        if (err.isPermanent) {
+          // 403/400 = broken config, retries won't help
+          throw err;
+        }
+        lastError = err;
+        if (attempt < LAUNCH_MAX_RETRIES) {
+          const delay = LAUNCH_RETRY_DELAYS_MS[attempt - 1] || 10000;
+          log(`[NST] Transient error, retrying in ${delay / 1000}s...`);
+          await new Promise(r => setTimeout(r, delay));
+        }
+        continue;
+      }
+
+      const startRaw = (await startRes.json()) as Record<string, unknown>;
+      const startData = (startRaw.data || startRaw) as Record<string, unknown>;
+      const wsEndpoint = (startData.webSocketDebuggerUrl || startData.wsUrl || startData.url) as string;
+
+      if (!wsEndpoint) {
+        throw new Error(`No WebSocket endpoint returned for profile ${profileId}`);
+      }
+
+      log(`[NST] Profile ${profileId} launched: ${wsEndpoint}`);
+      return wsEndpoint;
+    } catch (error) {
+      if (error instanceof NSTProfileLaunchError && error.isPermanent) {
+        throw error;
+      }
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (attempt < LAUNCH_MAX_RETRIES) {
+        const delay = LAUNCH_RETRY_DELAYS_MS[attempt - 1] || 10000;
+        log(`[NST] Launch attempt ${attempt} failed: ${lastError.message}. Retrying in ${delay / 1000}s...`);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
   }
 
-  const startRaw = (await startRes.json()) as Record<string, unknown>;
-  log(`[NST] Launch response: ${JSON.stringify(startRaw).substring(0, 300)}`);
-
-  // NST API v2 wraps responses in { data: { ... } }
-  // Launch returns { data: { profileId, port, webSocketDebuggerUrl } }
-  const startData = (startRaw.data || startRaw) as Record<string, unknown>;
-  const wsEndpoint = (startData.webSocketDebuggerUrl || startData.wsUrl || startData.url) as string;
-
-  if (!wsEndpoint) {
-    log(`[NST] WARNING: No WebSocket endpoint in launch response`);
-    log(`[NST] Available keys: ${Object.keys(startData).join(', ')}`);
-    throw new Error(`No WebSocket endpoint returned for profile ${profileId}`);
-  }
-
-  log(`[NST] Profile ${profileId} launched: ${wsEndpoint}`);
-  return wsEndpoint;
+  throw lastError || new Error(`Failed to launch profile ${profileId} after ${LAUNCH_MAX_RETRIES} attempts`);
 }
 
 /**
@@ -496,6 +516,31 @@ export async function verifyProfiles(
 
   log(`[NST] Verification complete: ${working.length}/${profileConfigs.length} profiles launchable`);
   return working;
+}
+
+// ─── Retry Configuration ─────────────────────────────────────────────────
+
+const LAUNCH_MAX_RETRIES = 3;
+const LAUNCH_RETRY_DELAYS_MS = [2000, 5000, 10000];
+
+/**
+ * Error thrown when an NSTbrowser profile fails to launch.
+ * Includes HTTP status code for classification (403 = broken proxy config).
+ */
+export class NSTProfileLaunchError extends Error {
+  constructor(
+    public readonly profileId: string,
+    public readonly httpStatus: number,
+    public readonly apiMessage: string,
+  ) {
+    super(`Profile ${profileId} launch failed: HTTP ${httpStatus} — ${apiMessage}`);
+    this.name = 'NSTProfileLaunchError';
+  }
+
+  get isPermanent(): boolean {
+    // 403 = broken proxy config, won't resolve with retries
+    return this.httpStatus === 403 || this.httpStatus === 400;
+  }
 }
 
 // ─── CDP Connection ─────────────────────────────────────────────────────────

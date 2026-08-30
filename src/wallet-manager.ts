@@ -1,6 +1,20 @@
 import { Browser, BrowserContext, Page } from 'playwright-core';
 import { log, logError } from './logger';
-import { BrowserConfig, launchBrowser, switchToProfile, getProfileManager } from './browser';
+import {
+  BrowserConfig,
+  launchBrowser,
+  launchIsolatedProfile,
+  closeIsolatedProfile,
+  checkNSTStatus,
+} from './browser';
+import {
+  ensureNSTRunning,
+  isNSTRunning,
+  closeNSTProfile,
+  NSTProfileLaunchError,
+  NSTProfileMapping,
+  launchNSTProfile,
+} from './nstbrowser';
 import { FaucetConfig, processWallet, resetForNextWallet, isValidSignetAddress } from './faucet';
 import { WalletResult } from './faucet';
 import { checkCloudflareTurnstile, CloudflareVerificationResult } from './cloudflare';
@@ -47,6 +61,22 @@ const DEFAULT_CONFIG: Config = {
     walletTimeoutMs: 300000,
   },
 };
+
+// ─── Profile Result Tracking ─────────────────────────────────────────────
+
+interface ProfileResult {
+  profileIndex: number;
+  profileId: string;
+  profileName: string;
+  status: 'SUCCESS' | 'FAILED' | 'SKIPPED';
+  errorMessage?: string;
+  walletResults: WalletResult[];
+  walletSuccess: number;
+  walletFailed: number;
+  walletSkipped: number;
+}
+
+// ─── Config Loading ──────────────────────────────────────────────────────
 
 function createDefaultConfig(configPath: string): void {
   const dir = path.dirname(configPath);
@@ -97,20 +127,138 @@ export function loadConfig(configPath: string): Config {
   return config;
 }
 
+// ─── Wallet Mapping & Validation ─────────────────────────────────────────
+
+/**
+ * Build deterministic mapping: 50 wallets → 10 profiles × 5 wallets.
+ * Config already defines this via nstProfiles[].wallets.
+ * This function validates and returns the mapping.
+ */
+function buildWalletMapping(config: Config): NSTProfileMapping[] {
+  const profiles = config.browser.nstProfiles;
+  if (!profiles || profiles.length === 0) {
+    throw new Error('No NST profiles configured. Set browser.nstProfiles in config.');
+  }
+
+  // Validate: every wallet in config.wallets must appear in exactly one profile
+  const allAssignedWallets = new Set<string>();
+  const allProfileWallets: string[] = [];
+
+  for (const profile of profiles) {
+    for (const w of profile.wallets) {
+      if (allAssignedWallets.has(w)) {
+        throw new Error(`Wallet ${w} is assigned to multiple profiles!`);
+      }
+      allAssignedWallets.add(w);
+      allProfileWallets.push(w);
+    }
+  }
+
+  // Check unassigned wallets
+  const unassigned = config.wallets.filter(w => !allAssignedWallets.has(w));
+  if (unassigned.length > 0) {
+    throw new Error(
+      `${unassigned.length} wallet(s) not assigned to any profile: ${unassigned.map(w => w.substring(0, 10)).join(', ')}. ` +
+      `Assign them to profiles in config.nst.json.`
+    );
+  }
+
+  // Check extra wallets in profiles
+  const configWalletSet = new Set(config.wallets);
+  const extraInProfiles = allProfileWallets.filter(w => !configWalletSet.has(w));
+  if (extraInProfiles.length > 0) {
+    log(`[NST] WARNING: ${extraInProfiles.length} wallet(s) in profiles not found in config.wallets — they will be skipped`);
+  }
+
+  return profiles;
+}
+
+function logWalletMapping(profiles: NSTProfileMapping[]): void {
+  console.log('\n============================================================');
+  console.log('NST WALLET MAPPING');
+  console.log('============================================================');
+
+  let totalWallets = 0;
+  for (let i = 0; i < profiles.length; i++) {
+    const p = profiles[i];
+    const start = totalWallets;
+    totalWallets += p.wallets.length;
+    console.log(`[NST] Profile ${i + 1} (${p.name.substring(0, 12)}) → wallets ${start}-${totalWallets - 1} [${p.id.substring(0, 8)}...]`);
+  }
+
+  console.log('');
+  console.log('[NST] Wallet allocation:');
+  console.log(`[NST]   Total wallets: ${totalWallets}`);
+  console.log(`[NST]   Profiles: ${profiles.length}`);
+
+  const allWallets = profiles.flatMap(p => p.wallets);
+  const uniqueWallets = new Set(allWallets);
+  const duplicates = allWallets.length - uniqueWallets.size;
+
+  console.log(`[NST]   Wallets per profile: ${profiles.map(p => p.wallets.length).join(', ')}`);
+  console.log(`[NST]   Assigned: ${allWallets.length}`);
+  console.log(`[NST]   Unique: ${uniqueWallets.size}`);
+  console.log(`[NST]   Duplicates: ${duplicates}`);
+  console.log('============================================================\n');
+
+  if (duplicates > 0) {
+    throw new Error(`${duplicates} duplicate wallet(s) found across profiles!`);
+  }
+}
+
+// ─── Profile Validation ──────────────────────────────────────────────────
+
+async function validateProfiles(profiles: NSTProfileMapping[]): Promise<NSTProfileMapping[]> {
+  console.log('\n============================================================');
+  console.log('NST PROFILE VALIDATION');
+  console.log('============================================================');
+
+  const launchable: NSTProfileMapping[] = [];
+
+  for (let i = 0; i < profiles.length; i++) {
+    const profile = profiles[i];
+    process.stdout.write(`Profile ${i + 1} (${profile.name}) ... `);
+
+    try {
+      const wsEndpoint = await launchNSTProfile(profile.id);
+      if (wsEndpoint) {
+        console.log('SUCCESS');
+        launchable.push(profile);
+        // Close the test instance
+        await closeNSTProfile(profile.id);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (error instanceof NSTProfileLaunchError) {
+        console.log(`FAILED (HTTP ${error.httpStatus})`);
+      } else if (msg.includes('403')) {
+        console.log('FAILED (403)');
+      } else {
+        console.log(`FAILED (${msg.substring(0, 60)})`);
+      }
+    }
+  }
+
+  console.log('');
+  console.log(`Launchable: ${launchable.length}/${profiles.length}`);
+  console.log(`Failed: ${profiles.length - launchable.length}/${profiles.length}`);
+  console.log('============================================================\n');
+
+  return launchable;
+}
+
+// ─── Navigation ──────────────────────────────────────────────────────────
+
 async function navigateToFaucet(page: Page, faucetUrl: string): Promise<void> {
   log(`Navigating to: ${faucetUrl}`);
   await page.goto(faucetUrl, {
     waitUntil: 'domcontentloaded',
     timeout: 60000,
   });
-  log(`Navigation completed`);
-  log(`Current URL: ${page.url()}`);
+  log(`Navigation completed — URL: ${page.url()}`);
 
   if (page.url() === 'about:blank') {
-    throw new Error(
-      'Navigation failed: page is still about:blank\n' +
-      'Wallet processing will not start'
-    );
+    throw new Error('Navigation failed: page is still about:blank');
   }
 
   log('Waiting for faucet form...');
@@ -121,9 +269,7 @@ async function navigateToFaucet(page: Page, faucetUrl: string): Promise<void> {
     });
     log('Faucet form detected');
   } catch {
-    log('Faucet form not detected after 5 minutes');
-    log('Checking if Cloudflare verification is needed...');
-    log('Please complete Cloudflare verification manually in the browser');
+    log('Faucet form not detected after 5 minutes, waiting for manual Cloudflare...');
     await page.waitForSelector('#address', {
       state: 'visible',
       timeout: 300000,
@@ -132,45 +278,206 @@ async function navigateToFaucet(page: Page, faucetUrl: string): Promise<void> {
   }
 }
 
-function printCycleSummary(results: WalletResult[], cycleNumber: number, cycleStartMs: number): void {
-  const completed = results.filter((r) => r.state === 'COMPLETED').length;
-  const errors = results.filter((r) => r.state === 'ERROR').length;
-  const timeouts = results.filter((r) => r.state === 'TIMEOUT').length;
-  const cycleDurationMs = Date.now() - cycleStartMs;
+// ─── Profile Processing ──────────────────────────────────────────────────
 
-  console.log('\n========================================');
-  console.log(`Cycle ${cycleNumber} completed`);
-  console.log(`Successful: ${completed}`);
-  console.log(`Errors: ${errors}`);
-  console.log(`Timeout: ${timeouts}`);
-  console.log(`Cycle duration: ${formatDuration(cycleDurationMs)}`);
-  console.log('========================================\n');
-}
+/**
+ * Process all wallets for a single profile.
+ * Returns wallet results. Errors are caught per-wallet — one wallet failure
+ * does NOT stop the remaining wallets.
+ */
+async function processProfileWallets(
+  page: Page,
+  wallets: string[],
+  profileIndex: number,
+  profileName: string,
+  config: Config,
+  history: HistoryData,
+  cycleNumber: number,
+): Promise<{ walletResults: WalletResult[]; walletSuccess: number; walletFailed: number; walletSkipped: number }> {
+  const walletResults: WalletResult[] = [];
+  let walletSuccess = 0;
+  let walletFailed = 0;
+  let walletSkipped = 0;
 
-function saveResults(results: WalletResult[], outputPath: string, cycleNumber: number): void {
-  const dir = path.dirname(outputPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+  for (let wi = 0; wi < wallets.length; wi++) {
+    const address = wallets[wi];
+    const shortAddr = address.substring(0, 10);
+
+    // Check history: skip already-completed wallets
+    const alreadyCompleted = history.requests.some(
+      r => r.address === maskAddress(address) && r.result === 'COMPLETED'
+    );
+    if (alreadyCompleted) {
+      log(`[NST] Profile ${profileIndex + 1} | Wallet ${wi + 1}/${wallets.length} | ${shortAddr}... | SKIPPED (already completed)`);
+      walletSkipped++;
+      continue;
+    }
+
+    log('----------------------------------------');
+    log(`[NST] Profile ${profileIndex + 1} | Wallet ${wi + 1}/${wallets.length}`);
+    log(`[NST] Address: ${shortAddr}...`);
+    log('[NST] Processing faucet request...');
+
+    try {
+      const lastRequest = history.requests.length > 0 ? history.requests[history.requests.length - 1] : null;
+      const waitDecision = calculateNextRequestTime(history);
+
+      if (waitDecision.waitMs > 0) {
+        log(`[NST] Cooldown: ${Math.round(waitDecision.waitMs / 1000)}s — ${waitDecision.reason}`);
+        await waitWithCountdown(waitDecision.waitMs, waitDecision.reason);
+      }
+
+      // Cloudflare check
+      const cfResult = await checkCloudflareTurnstile(page);
+      if (!cfResult.verified) {
+        log('Waiting for Cloudflare verification...');
+        const maxWait = 300_000;
+        const waitStart = Date.now();
+        while (Date.now() - waitStart < maxWait) {
+          const recheck = await checkCloudflareTurnstile(page);
+          if (recheck.verified) break;
+          await page.waitForTimeout(2000);
+        }
+      }
+
+      if (wi > 0) {
+        await resetForNextWallet(page);
+      }
+
+      const result = await processWallet(
+        page,
+        address,
+        wi,
+        wallets.length,
+        config.faucet.walletTimeoutMs,
+        cycleNumber,
+      );
+
+      walletResults.push(result);
+
+      if (result.state === 'COMPLETED') {
+        walletSuccess++;
+        log(`[NST] Profile ${profileIndex + 1} | Wallet ${wi + 1}/${wallets.length} | SUCCESS`);
+      } else {
+        walletFailed++;
+        log(`[NST] Profile ${profileIndex + 1} | Wallet ${wi + 1}/${wallets.length} | ${result.state}`);
+      }
+
+      // Record in history
+      const rateLimitInfo = result.errorText ? parseRateLimitMessage(result.errorText) : null;
+      let nextAllowedAt = result.nextAllowedAt;
+      if (result.state === 'ERROR' && result.errorText) {
+        const parsedNextAllowed = parseErrorForNextAllowed(result.errorText);
+        if (parsedNextAllowed) nextAllowedAt = parsedNextAllowed;
+      }
+
+      const requestRecord: RequestRecord = {
+        cycleNumber,
+        walletIndex: wi,
+        address: maskAddress(address),
+        startedAt: result.startedAt.toISOString(),
+        cloudflareDetectedAt: null,
+        cloudflarePassedAt: null,
+        cloudflareDurationMs: cfResult.durationMs,
+        submitAt: result.submitAt?.toISOString() || null,
+        resultAt: result.resultAt?.toISOString() || null,
+        requestDurationMs: result.requestDurationMs,
+        cooldownDurationMs: null,
+        result: result.state,
+        errorText: result.errorText,
+        nextAllowedAt: nextAllowedAt?.toISOString() || null,
+        txid: result.txid || null,
+      };
+      addRequest(history, requestRecord);
+      saveHistory(history);
+    } catch (walletError) {
+      walletFailed++;
+      const msg = walletError instanceof Error ? walletError.message : String(walletError);
+      log(`[NST] Profile ${profileIndex + 1} | Wallet ${wi + 1}/${wallets.length} | FAILED`);
+      log(`[NST]   Reason: ${msg}`);
+      logError('Wallet processing error', walletError);
+
+      // Record the failure
+      const failRecord: RequestRecord = {
+        cycleNumber,
+        walletIndex: wi,
+        address: maskAddress(address),
+        startedAt: new Date().toISOString(),
+        cloudflareDetectedAt: null,
+        cloudflarePassedAt: null,
+        cloudflareDurationMs: null,
+        submitAt: null,
+        resultAt: new Date().toISOString(),
+        requestDurationMs: null,
+        cooldownDurationMs: null,
+        result: 'ERROR',
+        errorText: msg,
+        nextAllowedAt: null,
+        txid: null,
+      };
+      addRequest(history, failRecord);
+      saveHistory(history);
+    }
   }
 
-  const output = results.map((r) => ({
-    cycle: r.cycleNumber,
-    walletIndex: r.address,
-    address: r.address,
-    state: r.state,
-    message: r.message,
-    startedAt: r.startedAt.toISOString(),
-    completedAt: r.completedAt.toISOString(),
-    durationMs: r.completedAt.getTime() - r.startedAt.getTime(),
-    cloudflareDurationMs: r.cloudflareDurationMs,
-    requestDurationMs: r.requestDurationMs,
-  }));
-
-  fs.writeFileSync(outputPath, JSON.stringify(output, null, 2), 'utf-8');
-  log(`Results saved to ${outputPath}`);
+  return { walletResults, walletSuccess, walletFailed, walletSkipped };
 }
 
+// ─── Report ──────────────────────────────────────────────────────────────
+
+function printFinalReport(profileResults: ProfileResult[], totalDurationMs: number): void {
+  console.log('\n============================================================');
+  console.log('FINAL NST REPORT');
+  console.log('============================================================');
+  console.log('');
+
+  const profileSuccess = profileResults.filter(r => r.status === 'SUCCESS').length;
+  const profileFailed = profileResults.filter(r => r.status === 'FAILED').length;
+  const profileSkipped = profileResults.filter(r => r.status === 'SKIPPED').length;
+
+  const totalWalletSuccess = profileResults.reduce((s, r) => s + r.walletSuccess, 0);
+  const totalWalletFailed = profileResults.reduce((s, r) => s + r.walletFailed, 0);
+  const totalWalletSkipped = profileResults.reduce((s, r) => s + r.walletSkipped, 0);
+  const totalAssigned = profileResults.reduce((s, r) => s + r.walletResults.length + r.walletSkipped, 0);
+
+  console.log('Profiles:');
+  console.log(`  SUCCESS: ${profileSuccess}`);
+  console.log(`  FAILED:  ${profileFailed}`);
+  console.log(`  SKIPPED: ${profileSkipped}`);
+  console.log('');
+
+  console.log('Wallets:');
+  console.log(`  SUCCESS: ${totalWalletSuccess}`);
+  console.log(`  FAILED:  ${totalWalletFailed}`);
+  console.log(`  SKIPPED: ${totalWalletSkipped}`);
+  console.log('');
+
+  for (const r of profileResults) {
+    const total = r.walletSuccess + r.walletFailed + r.walletSkipped;
+    const statusIcon = r.status === 'SUCCESS' ? '✅' : r.status === 'FAILED' ? '❌' : '⏭️';
+    if (r.status === 'FAILED') {
+      console.log(`${statusIcon} Profile ${r.profileIndex + 1} (${r.profileName}): ${r.status} — ${r.errorMessage || 'unknown'}`);
+    } else {
+      console.log(`${statusIcon} Profile ${r.profileIndex + 1} (${r.profileName}): ${r.walletSuccess}/${total} wallets`);
+    }
+  }
+
+  console.log('');
+  console.log('Total:');
+  console.log(`  Assigned:   ${totalAssigned}`);
+  console.log(`  Processed:  ${totalWalletSuccess + totalWalletFailed}`);
+  console.log(`  Successful: ${totalWalletSuccess}`);
+  console.log(`  Failed:     ${totalWalletFailed}`);
+  console.log(`  Skipped:    ${totalWalletSkipped}`);
+  console.log(`  Duration:   ${formatDuration(totalDurationMs)}`);
+  console.log('============================================================\n');
+}
+
+// ─── Main Run ────────────────────────────────────────────────────────────
+
 export async function run(configPath: string = 'config/config.json'): Promise<void> {
+  const totalStartTime = Date.now();
+
   log('Crane started');
 
   const config = loadConfig(configPath);
@@ -180,11 +487,9 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
   addSession(history);
   saveHistory(history);
 
-  let context: BrowserContext | null = null;
-  let browser: Browser | null = null;
   let shouldStop = false;
 
-  const shutdownHandler = async () => {
+  const shutdownHandler = () => {
     log('Shutdown signal received, stopping gracefully...');
     shouldStop = true;
     process.removeListener('SIGINT', shutdownHandler);
@@ -195,208 +500,250 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
   process.on('SIGTERM', shutdownHandler);
 
   try {
-    const launchResult = await launchBrowser(config.browser);
-    browser = launchResult.browser;
-    context = launchResult.context;
-    let page = launchResult.page;
-    let currentProfileId = launchResult.profileId || null;
+    // ─── NST Mode: Profile-based processing ──────────────────────────
+    if (config.browser.useNSTbrowser) {
+      await ensureNSTRunning();
 
-    await navigateToFaucet(page, config.faucet.url);
+      // Build and validate wallet mapping
+      const profiles = buildWalletMapping(config);
+      logWalletMapping(profiles);
 
-    log('Starting wallet processing');
+      // Validate all profiles can launch
+      const launchableProfiles = await validateProfiles(profiles);
 
-    let cycleNumber = 1;
-
-    while (!shouldStop) {
-      const cycleStartMs = Date.now();
-      log('========================================');
-      log(`Starting Cycle ${cycleNumber}`);
-      log(`Wallets: ${config.wallets.length}`);
-      log('========================================');
-
-      const cycleResults: WalletResult[] = [];
-      const profileUsageStats: Record<string, number> = {};
-
-      for (let i = 0; i < config.wallets.length; i++) {
-        if (shouldStop) break;
-
-        const address = config.wallets[i];
-
-        // NST mode: switch to the correct profile for this wallet
-        if (config.browser.useNSTbrowser) {
-          const switched = await switchToProfile(address);
-          if (switched) {
-            // Profile switched — navigate to faucet on new profile
-            browser = switched.browser;
-            context = switched.context;
-            page = switched.page;
-            currentProfileId = switched.profileId;
-            await navigateToFaucet(page, config.faucet.url);
-          }
-          // Track usage
-          if (currentProfileId) {
-            profileUsageStats[currentProfileId] = (profileUsageStats[currentProfileId] || 0) + 1;
-          }
-        }
-
-        const lastRequest = history.requests.length > 0 ? history.requests[history.requests.length - 1] : null;
-        const waitDecision = calculateNextRequestTime(history);
-
-        log('----------------------------------------');
-        log(`Cycle ${cycleNumber} | Wallet ${i + 1}/${config.wallets.length}`);
-
-        if (lastRequest) {
-          log(`Last request: ${lastRequest.result} at ${lastRequest.resultAt || 'unknown'}`);
-          if (lastRequest.errorText) {
-            log(`Last error: ${lastRequest.errorText}`);
-          }
-        } else {
-          log('Last request: none');
-        }
-
-        if (waitDecision.faucetResponseMs !== null) {
-          log(`Faucet response time: ${waitDecision.faucetResponseMs}ms`);
-        }
-
-        log(`Faucet cooldown: ${Math.round(waitDecision.currentCooldownMs / 1000)} seconds`);
-        log(`Cooldown source: ${waitDecision.cooldownSource}`);
-
-        if (waitDecision.waitMs > 0) {
-          log(`Remaining wait: ${Math.round(waitDecision.waitMs / 1000)} seconds`);
-          log(`Wait reason: ${waitDecision.reason}`);
-        } else {
-          log(`Remaining wait: 0 seconds`);
-          log(`Wait reason: ${waitDecision.reason}`);
-        }
-
-        log('----------------------------------------');
-
-        if (waitDecision.waitMs > 0) {
-          await waitWithCountdown(waitDecision.waitMs, waitDecision.reason);
-        }
-
-        if (shouldStop) break;
-
-        log('Checking Cloudflare verification...');
-
-        const cfResult = await checkCloudflareTurnstile(page);
-        if (!cfResult.verified) {
-          log('Waiting for Cloudflare verification...');
-          const maxWait = 300_000;
-          const waitStart = Date.now();
-          while (Date.now() - waitStart < maxWait) {
-            const recheck = await checkCloudflareTurnstile(page);
-            if (recheck.verified) {
-              break;
-            }
-            await page.waitForTimeout(2000);
-          }
-        }
-
-        if (i > 0) {
-          await resetForNextWallet(page);
-        }
-
-        log('Submitting wallet...');
-
-        const result = await processWallet(
-          page,
-          address,
-          i,
-          config.wallets.length,
-          config.faucet.walletTimeoutMs,
-          cycleNumber
-        );
-
-        cycleResults.push(result);
-
-        const rateLimitInfo = result.errorText ? parseRateLimitMessage(result.errorText) : null;
-        let nextAllowedAt = result.nextAllowedAt;
-        if (result.state === 'ERROR' && result.errorText) {
-          const parsedNextAllowed = parseErrorForNextAllowed(result.errorText);
-          if (parsedNextAllowed) {
-            nextAllowedAt = parsedNextAllowed;
-          }
-        }
-
-        if (result.state === 'ERROR') {
-          log('----------------------------------------');
-          log('Faucet rejected request');
-          if (result.errorText) {
-            log(`Detected reason: ${result.errorText}`);
-          }
-          if (rateLimitInfo?.isRateLimit) {
-            const adaptiveCooldown = calculateAdaptiveCooldown(history);
-            log(`Increasing cooldown from ${Math.round(waitDecision.currentCooldownMs / 1000)}s to ${Math.round(adaptiveCooldown.cooldownMs / 1000)}s`);
-          }
-          if (nextAllowedAt) {
-            log(`Next allowed request at: ${nextAllowedAt.toISOString()}`);
-          }
-          log('----------------------------------------');
-        }
-
-        const requestRecord: RequestRecord = {
-          cycleNumber,
-          walletIndex: i,
-          address: maskAddress(address),
-          startedAt: result.startedAt.toISOString(),
-          cloudflareDetectedAt: null,
-          cloudflarePassedAt: null,
-          cloudflareDurationMs: cfResult.durationMs,
-          submitAt: result.submitAt?.toISOString() || null,
-          resultAt: result.resultAt?.toISOString() || null,
-          requestDurationMs: result.requestDurationMs,
-          cooldownDurationMs: waitDecision.currentCooldownMs,
-          result: result.state,
-          errorText: result.errorText,
-          nextAllowedAt: nextAllowedAt?.toISOString() || null,
-          txid: result.txid || null,
-        };
-        addRequest(history, requestRecord);
-        saveHistory(history);
+      if (launchableProfiles.length === 0) {
+        console.log('\n❌ No profiles could be launched. Fix proxy config in NSTbrowser and try again.');
+        console.log('For each broken profile: profile settings → Proxy → set to "No proxy" or fix proxy group.\n');
+        return;
       }
 
-      if (!shouldStop) {
-        printCycleSummary(cycleResults, cycleNumber, cycleStartMs);
+      console.log(`\n============================================================`);
+      console.log(`NST FAUCET RUN`);
+      console.log(`============================================================`);
+      console.log(`Profiles: ${launchableProfiles.length} launchable / ${profiles.length} total`);
+      console.log(`Wallets: ${config.wallets.length}`);
+      console.log(`Wallets/profile: ${launchableProfiles.map(p => p.wallets.length).join(', ')}`);
+      console.log(`============================================================\n`);
 
-        // Log profile usage stats
-        if (config.browser.useNSTbrowser && Object.keys(profileUsageStats).length > 0) {
-          log('\n📊 Profile usage stats:');
-          const profiles = config.browser.nstProfiles || [];
-          for (const [id, count] of Object.entries(profileUsageStats)) {
-            const profile = profiles.find((p) => p.id === id);
-            const name = profile?.name || id.substring(0, 8);
-            log(`  ${name}: ${count} wallet(s)`);
-          }
+      const profileResults: ProfileResult[] = [];
+      let cycleNumber = 1;
+
+      // Process each profile sequentially — fully isolated lifecycle
+      for (let pi = 0; pi < profiles.length; pi++) {
+        if (shouldStop) break;
+
+        const profile = profiles[pi];
+        const isLaunchable = launchableProfiles.some(lp => lp.id === profile.id);
+
+        if (!isLaunchable) {
+          log(`[NST] Profile ${pi + 1} (${profile.name}) — SKIPPED (not launchable)`);
+          profileResults.push({
+            profileIndex: pi,
+            profileId: profile.id,
+            profileName: profile.name,
+            status: 'SKIPPED',
+            errorMessage: 'Profile failed validation (403/broken proxy)',
+            walletResults: [],
+            walletSuccess: 0,
+            walletFailed: 0,
+            walletSkipped: profile.wallets.length,
+          });
+          continue;
         }
 
-        const cycleRecord: CycleRecord = {
-          cycleNumber,
-          startedAt: new Date(cycleStartMs).toISOString(),
-          completedAt: new Date().toISOString(),
-          totalWallets: cycleResults.length,
-          successful: cycleResults.filter(r => r.state === 'COMPLETED').length,
-          errors: cycleResults.filter(r => r.state === 'ERROR').length,
-          timeouts: cycleResults.filter(r => r.state === 'TIMEOUT').length,
-          durationMs: Date.now() - cycleStartMs,
-        };
-        addCycle(history, cycleRecord);
-        saveHistory(history);
+        log(`\n[NST] ═══ Profile ${pi + 1}/${profiles.length}: ${profile.name} ═══`);
+        log(`[NST] ID: ${profile.id}`);
+        log(`[NST] Wallets: ${profile.wallets.length}`);
 
-        const resultsPath = path.join('data', 'results.json');
-        saveResults(cycleResults, resultsPath, cycleNumber);
+        let browser: Browser | null = null;
+        let page: Page | null = null;
 
-        log('Saving cycle results...');
-        log('Calculating next cycle start time...');
+        try {
+          // Launch isolated profile session
+          const session = await launchIsolatedProfile(profile.id);
+          browser = session.browser;
+          page = session.page;
 
-        const nextWait = calculateNextRequestTime(history);
-        if (nextWait.waitMs > 0) {
-          log(`Waiting ${formatDuration(nextWait.waitMs)} before next cycle`);
-          log(`Reason: ${nextWait.reason}`);
-          await waitWithCountdown(nextWait.waitMs, nextWait.reason);
+          // Navigate to faucet
+          await navigateToFaucet(page, config.faucet.url);
+
+          // Process this profile's wallets
+          const walletOutcome = await processProfileWallets(
+            page,
+            profile.wallets,
+            pi,
+            profile.name,
+            config,
+            history,
+            cycleNumber,
+          );
+
+          profileResults.push({
+            profileIndex: pi,
+            profileId: profile.id,
+            profileName: profile.name,
+            status: 'SUCCESS',
+            walletResults: walletOutcome.walletResults,
+            walletSuccess: walletOutcome.walletSuccess,
+            walletFailed: walletOutcome.walletFailed,
+            walletSkipped: walletOutcome.walletSkipped,
+          });
+        } catch (profileError) {
+          const msg = profileError instanceof Error ? profileError.message : String(profileError);
+          log(`[NST] Profile ${pi + 1} (${profile.name}) — FAILED: ${msg}`);
+          logError(`Profile ${pi + 1} error`, profileError);
+
+          profileResults.push({
+            profileIndex: pi,
+            profileId: profile.id,
+            profileName: profile.name,
+            status: 'FAILED',
+            errorMessage: msg.substring(0, 200),
+            walletResults: [],
+            walletSuccess: 0,
+            walletFailed: profile.wallets.length,
+            walletSkipped: 0,
+          });
+        } finally {
+          // ALWAYS close the isolated session — even on error
+          await closeIsolatedProfile(browser, profile.id);
+          log(`[NST] Profile ${pi + 1} session closed`);
         }
 
         cycleNumber++;
+      }
+
+      // Final report
+      const totalDuration = Date.now() - totalStartTime;
+      printFinalReport(profileResults, totalDuration);
+
+    } else {
+      // ─── Chrome CDP Mode: original behavior ────────────────────────
+      const launchResult = await launchBrowser(config.browser);
+      let browser = launchResult.browser;
+      let context = launchResult.context;
+      let page = launchResult.page;
+
+      await navigateToFaucet(page, config.faucet.url);
+
+      log('Starting wallet processing');
+
+      let cycleNumber = 1;
+
+      while (!shouldStop) {
+        const cycleStartMs = Date.now();
+        log('========================================');
+        log(`Starting Cycle ${cycleNumber}`);
+        log(`Wallets: ${config.wallets.length}`);
+        log('========================================');
+
+        const cycleResults: WalletResult[] = [];
+
+        for (let i = 0; i < config.wallets.length; i++) {
+          if (shouldStop) break;
+
+          const address = config.wallets[i];
+
+          const lastRequest = history.requests.length > 0 ? history.requests[history.requests.length - 1] : null;
+          const waitDecision = calculateNextRequestTime(history);
+
+          log('----------------------------------------');
+          log(`Cycle ${cycleNumber} | Wallet ${i + 1}/${config.wallets.length}`);
+
+          if (waitDecision.waitMs > 0) {
+            await waitWithCountdown(waitDecision.waitMs, waitDecision.reason);
+          }
+
+          if (shouldStop) break;
+
+          const cfResult = await checkCloudflareTurnstile(page);
+          if (!cfResult.verified) {
+            const maxWait = 300_000;
+            const waitStart = Date.now();
+            while (Date.now() - waitStart < maxWait) {
+              const recheck = await checkCloudflareTurnstile(page);
+              if (recheck.verified) break;
+              await page.waitForTimeout(2000);
+            }
+          }
+
+          if (i > 0) {
+            await resetForNextWallet(page);
+          }
+
+          const result = await processWallet(
+            page,
+            address,
+            i,
+            config.wallets.length,
+            config.faucet.walletTimeoutMs,
+            cycleNumber,
+          );
+
+          cycleResults.push(result);
+
+          let nextAllowedAt = result.nextAllowedAt;
+          if (result.state === 'ERROR' && result.errorText) {
+            const parsedNextAllowed = parseErrorForNextAllowed(result.errorText);
+            if (parsedNextAllowed) nextAllowedAt = parsedNextAllowed;
+          }
+
+          const requestRecord: RequestRecord = {
+            cycleNumber,
+            walletIndex: i,
+            address: maskAddress(address),
+            startedAt: result.startedAt.toISOString(),
+            cloudflareDetectedAt: null,
+            cloudflarePassedAt: null,
+            cloudflareDurationMs: cfResult.durationMs,
+            submitAt: result.submitAt?.toISOString() || null,
+            resultAt: result.resultAt?.toISOString() || null,
+            requestDurationMs: result.requestDurationMs,
+            cooldownDurationMs: waitDecision.currentCooldownMs,
+            result: result.state,
+            errorText: result.errorText,
+            nextAllowedAt: nextAllowedAt?.toISOString() || null,
+            txid: result.txid || null,
+          };
+          addRequest(history, requestRecord);
+          saveHistory(history);
+        }
+
+        if (!shouldStop) {
+          const completed = cycleResults.filter((r) => r.state === 'COMPLETED').length;
+          const errors = cycleResults.filter((r) => r.state === 'ERROR').length;
+          const timeouts = cycleResults.filter((r) => r.state === 'TIMEOUT').length;
+          const cycleDurationMs = Date.now() - cycleStartMs;
+
+          console.log('\n========================================');
+          console.log(`Cycle ${cycleNumber} completed`);
+          console.log(`Successful: ${completed}`);
+          console.log(`Errors: ${errors}`);
+          console.log(`Timeout: ${timeouts}`);
+          console.log(`Duration: ${formatDuration(cycleDurationMs)}`);
+          console.log('========================================\n');
+
+          const cycleRecord: CycleRecord = {
+            cycleNumber,
+            startedAt: new Date(cycleStartMs).toISOString(),
+            completedAt: new Date().toISOString(),
+            totalWallets: cycleResults.length,
+            successful: completed,
+            errors,
+            timeouts,
+            durationMs: cycleDurationMs,
+          };
+          addCycle(history, cycleRecord);
+          saveHistory(history);
+
+          const nextWait = calculateNextRequestTime(history);
+          if (nextWait.waitMs > 0) {
+            log(`Waiting ${formatDuration(nextWait.waitMs)} before next cycle`);
+            await waitWithCountdown(nextWait.waitMs, nextWait.reason);
+          }
+
+          cycleNumber++;
+        }
       }
     }
   } catch (error) {
@@ -406,13 +753,7 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
     process.removeListener('SIGINT', shutdownHandler);
     process.removeListener('SIGTERM', shutdownHandler);
 
-    if (context) {
-      await context.close();
-    }
-
     saveHistory(history);
-
     log('Graceful shutdown complete');
-    log('Browser session preserved (Chrome still running)');
   }
 }
