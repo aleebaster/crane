@@ -248,10 +248,17 @@ export async function launchNSTProfile(profileId: string, _proxy?: ProxyConfig):
     try {
       log(`[NST] Launching profile ${profileId} (attempt ${attempt}/${LAUNCH_MAX_RETRIES})...`);
 
-      const startRes = await fetch(`${NST_API_BASE}/browsers/${profileId}`, {
-        method: 'POST',
-        headers: authHeaders(),
-      });
+      // Use GET /connect/{profileId} — the official SDK endpoint that starts AND
+      // connects to a browser profile. POST /browsers/{id} only starts the process;
+      // GET /connect/{id} returns the CDP WebSocket URL needed for Playwright.
+      const configParam = encodeURIComponent(JSON.stringify({ headless: false, autoClose: false }));
+      const startRes = await fetch(
+        `${NST_API_BASE}/connect/${profileId}?config=${configParam}`,
+        {
+          method: 'GET',
+          headers: authHeaders(),
+        }
+      );
 
       log(`[NST] Launch response: ${startRes.status} ${startRes.statusText}`);
 

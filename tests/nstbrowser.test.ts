@@ -161,7 +161,9 @@ describe('createNSTProfile', () => {
 describe('launchNSTProfile', () => {
   it('should start browser and return WebSocket endpoint', async () => {
     mockFetch((url, init) => {
-      // NST API v2: POST /browsers/{profileId} returns webSocketDebuggerUrl directly
+      // NST API v2: GET /connect/{profileId} returns webSocketDebuggerUrl
+      expect(url).toContain('/connect/profile-1?config=');
+      expect(init?.method).toBe('GET');
       return jsonResponse({
         data: {
           profileId: 'profile-1',
@@ -181,6 +183,27 @@ describe('launchNSTProfile', () => {
     // Retry logic: 404 is transient, so it retries 3 times with backoff (2s+5s=7s)
     await expect(launchNSTProfile('missing')).rejects.toThrow();
   }, 15000);
+
+  it('should use correct SDK endpoint (GET /connect/{id})', async () => {
+    let capturedUrl = '';
+    let capturedMethod = '';
+    mockFetch((url, init) => {
+      capturedUrl = url;
+      capturedMethod = init?.method || '';
+      return jsonResponse({
+        data: {
+          profileId: 'test-1',
+          port: 9300,
+          webSocketDebuggerUrl: 'ws://127.0.0.1:9300/devtools/browser/xyz',
+        },
+      });
+    });
+
+    await launchNSTProfile('test-1');
+    expect(capturedUrl).toContain('/connect/test-1');
+    expect(capturedUrl).toContain('config=');
+    expect(capturedMethod).toBe('GET');
+  });
 
   it('should throw immediately on 403 (permanent failure)', async () => {
     mockFetch(() => errorResponse(403, 'request profile failed with code: 403'));
