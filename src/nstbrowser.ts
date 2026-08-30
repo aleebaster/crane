@@ -236,23 +236,21 @@ export async function createNSTProfile(config: NSTProfileConfig): Promise<string
 
 /**
  * Launch a profile via the browser API and return CDP WebSocket endpoint.
- * API: POST /api/v2/browsers/
+ * API: POST /api/v2/browsers/{profileId}
+ *
+ * NOTE: Do NOT pass proxy override in the launch body — profiles already
+ * have proxy configured internally in NSTbrowser. Passing proxy override
+ * causes a 403 error.
  */
-export async function launchNSTProfile(profileId: string, proxy?: ProxyConfig): Promise<string> {
+export async function launchNSTProfile(profileId: string, _proxy?: ProxyConfig): Promise<string> {
   log(`[NST] Launching profile: ${profileId}`);
   log(`[NST] API endpoint: ${NST_API_BASE}/browsers/${profileId}`);
 
-  const launchBody: Record<string, unknown> = {};
-  if (proxy) {
-    launchBody.proxy = getNSTProxyPayload(proxy);
-    log(`[NST] Using proxy: ${proxy.type}://${proxy.host}:${proxy.port}`);
-  }
-
-  log(`[NST] Sending launch request...`);
+  // NOTE: Proxy is NOT sent here — it's already configured inside NSTbrowser profiles
+  log(`[NST] Sending launch request (no proxy override)...`);
   const startRes = await fetch(`${NST_API_BASE}/browsers/${profileId}`, {
     method: 'POST',
     headers: authHeaders(),
-    body: Object.keys(launchBody).length > 0 ? JSON.stringify(launchBody) : undefined,
   });
 
   log(`[NST] Launch response status: ${startRes.status} ${startRes.statusText}`);
@@ -385,30 +383,55 @@ export async function listNSTProfiles(): Promise<NSTProfile[]> {
 
 /**
  * Get a single profile by its ID.
- * API: GET /api/v2/profiles/{id}
- * Returns the profile object or null if not found.
+ * NST API v2 doesn't have a GET /profiles/{id} endpoint,
+ * so we fetch the list and filter.
  */
 export async function getProfileById(profileId: string): Promise<NSTProfile | null> {
   try {
     log(`[NST] Looking up profile: ${profileId}`);
-    const res = await fetch(`${NST_API_BASE}/profiles/${profileId}`, {
-      method: 'GET',
-      headers: { 'x-api-key': getApiKey() },
-      signal: AbortSignal.timeout(5000),
-    });
 
-    log(`[NST] Get profile status: ${res.status}`);
+    // Search through paginated profile list
+    let page = 1;
+    let hasNext = true;
 
-    if (!res.ok) {
-      log(`[NST] Profile ${profileId} not found (${res.status})`);
-      return null;
+    while (hasNext) {
+      const res = await fetch(`${NST_API_BASE}/profiles?page=${page}&limit=50`, {
+        method: 'GET',
+        headers: { 'x-api-key': getApiKey() },
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!res.ok) break;
+
+      const raw = (await res.json()) as Record<string, unknown>;
+      const inner = (raw.data || raw) as Record<string, unknown>;
+      const docs = (inner.docs || inner.profiles || inner.list || []) as Array<Record<string, unknown>>;
+
+      for (const doc of docs) {
+        const id = (doc.profileId || doc.id || doc._id) as string;
+        if (id === profileId) {
+          const params = doc.parameters as Record<string, unknown> | undefined;
+          const fp = (params?.fingerprint || doc.fingerprint || {}) as NSTFingerprint;
+          const profile: NSTProfile = {
+            id,
+            name: (doc.name || 'unnamed') as string,
+            fingerprint: fp,
+          };
+          log(`[NST] Profile found: ${profile.name} (${profileId})`);
+          return profile;
+        }
+      }
+
+      hasNext = inner.hasNextPage === true;
+      if (hasNext && inner.nextPage) {
+        page = inner.nextPage as number;
+      } else {
+        hasNext = false;
+      }
     }
 
-    const raw = (await res.json()) as Record<string, unknown>;
-    // NST API v2 wraps responses in { data: { ... } }
-    const data = (raw.data || raw) as NSTProfile;
-    log(`[NST] Profile found: ${data.name || profileId}`);
-    return data;
+    log(`[NST] Profile ${profileId} not found in any page`);
+    return null;
   } catch (error) {
     log(`[NST] Failed to get profile ${profileId}: ${error instanceof Error ? error.message : error}`);
     return null;
@@ -435,6 +458,44 @@ export async function ensureProfileExists(
   } else {
     log(`[NST] Profile ${profileId} exists: ${existing.name}`);
   }
+}
+
+// ─── Profile Verification ─────────────────────────────────────────────────
+
+/**
+ * Verify which profiles can actually be launched.
+ * Some profiles may fail with 403 if their proxy config is broken.
+ * Returns only the profiles that successfully launch.
+ */
+export async function verifyProfiles(
+  profileConfigs: NSTProfileMapping[]
+): Promise<NSTProfileMapping[]> {
+  log(`[NST] Verifying ${profileConfigs.length} profiles can launch...`);
+  const working: NSTProfileMapping[] = [];
+
+  for (const profile of profileConfigs) {
+    try {
+      log(`[NST] Testing launch for ${profile.name} (${profile.id.substring(0, 8)}...)`);
+      const wsEndpoint = await launchNSTProfile(profile.id);
+      if (wsEndpoint) {
+        log(`[NST]   ✅ ${profile.name} — launchable`);
+        working.push(profile);
+
+        // Close the test instance immediately
+        await closeNSTProfile(profile.id);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.includes('403')) {
+        log(`[NST]   ❌ ${profile.name} — 403 (broken proxy config)`);
+      } else {
+        log(`[NST]   ⚠️ ${profile.name} — ${msg.substring(0, 100)}`);
+      }
+    }
+  }
+
+  log(`[NST] Verification complete: ${working.length}/${profileConfigs.length} profiles launchable`);
+  return working;
 }
 
 // ─── CDP Connection ─────────────────────────────────────────────────────────

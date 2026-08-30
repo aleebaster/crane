@@ -19,6 +19,7 @@ import {
   getProfileById,
   createNSTProfile,
   generateUniqueFingerprint,
+  verifyProfiles,
 } from './nstbrowser';
 import { ProfilePool } from './profile-pool';
 import { ProxyConfig, testProxy } from './proxy';
@@ -219,24 +220,19 @@ async function launchNSTbrowser(config: BrowserConfig): Promise<BrowserLaunchRes
     }
   }
 
-  // Verify all configured profiles exist in NSTbrowser
+  // Verify all configured profiles exist AND can launch
   if (config.nstProfiles && config.nstProfiles.length > 0) {
-    log(`[NST] Verifying ${config.nstProfiles.length} profiles exist...`);
-    for (const profile of config.nstProfiles) {
-      const exists = await getProfileById(profile.id);
-      if (exists) {
-        log(`[NST]   ✓ ${profile.name} (${profile.id.substring(0, 8)}...)`);
-      } else if (config.createProfilesOnDemand) {
-        log(`[NST]   ✗ ${profile.name} — creating...`);
-        await createNSTProfile({
-          name: profile.name,
-          fingerprint: generateUniqueFingerprint(),
-          proxy: config.proxy?.enabled ? config.proxy : undefined,
-        });
-      } else {
-        log(`[NST]   ✗ ${profile.name} — NOT FOUND (createProfilesOnDemand=false)`);
-      }
+    const verified = await verifyProfiles(config.nstProfiles);
+
+    if (verified.length === 0) {
+      log('[NST] WARNING: No profiles could be launched! Check proxy config in NSTbrowser.');
+    } else if (verified.length < config.nstProfiles.length) {
+      log(`[NST] WARNING: Only ${verified.length}/${config.nstProfiles.length} profiles launchable.`);
+      log('[NST] Fix broken profiles in NSTbrowser: profile settings → proxy → set to "No proxy" or fix the proxy group.');
     }
+
+    // Update config to only use verified profiles
+    config.nstProfiles = verified;
   }
 
   // Launch the first configured profile for initial page setup
