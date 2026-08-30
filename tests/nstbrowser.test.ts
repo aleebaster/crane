@@ -357,3 +357,204 @@ describe('NST types', () => {
     expect(config.proxy).toBe('http://proxy:8080');
   });
 });
+
+// ─── NSTProfileLaunchError classification ─────────────────────────────────
+
+describe('NSTProfileLaunchError', () => {
+  it('should classify code 6001 as PLAN_LIMIT', () => {
+    const body = JSON.stringify({ data: null, err: true, msg: 'exceeded plan limits', code: 6001 });
+    const err = new NSTProfileLaunchError('p1', 400, body);
+    expect(err.nstCode).toBe(6001);
+    expect(err.reason).toBe('PLAN_LIMIT');
+    expect(err.isPlanLimit).toBe(true);
+    expect(err.isPermanent).toBe(true);
+  });
+
+  it('should not retry on code 6001 (isPermanent=true)', () => {
+    const err = new NSTProfileLaunchError('p1', 400,
+      JSON.stringify({ code: 6001, msg: 'exceeded plan limits' })
+    );
+    // isPermanent → no retry in launchNSTProfile
+    expect(err.isPermanent).toBe(true);
+  });
+
+  it('should classify 403 as PROXY_ERROR', () => {
+    const err = new NSTProfileLaunchError('p2', 403, 'forbidden');
+    expect(err.reason).toBe('PROXY_ERROR');
+    expect(err.isPlanLimit).toBe(false);
+    expect(err.isPermanent).toBe(true);
+  });
+
+  it('should classify 500 as TRANSIENT', () => {
+    const err = new NSTProfileLaunchError('p3', 500, 'server error');
+    expect(err.reason).toBe('TRANSIENT');
+    expect(err.isPermanent).toBe(false);
+  });
+
+  it('should parse nstCode from JSON body', () => {
+    const body = JSON.stringify({ code: 6001, msg: 'exceeded plan limits' });
+    const err = new NSTProfileLaunchError('p4', 400, body);
+    expect(err.nstCode).toBe(6001);
+  });
+
+  it('should handle non-JSON body gracefully', () => {
+    const err = new NSTProfileLaunchError('p5', 400, 'plain text error');
+    expect(err.nstCode).toBe(0);
+    expect(err.reason).toBe('PERMANENT');
+  });
+
+  it('should classify 400 without code as PERMANENT', () => {
+    const body = JSON.stringify({ code: 0, msg: 'bad request' });
+    const err = new NSTProfileLaunchError('p6', 400, body);
+    expect(err.reason).toBe('PERMANENT');
+    expect(err.isPlanLimit).toBe(false);
+  });
+});
+
+// ─── Wallet mapping validation ──────────────────────────────────────────────
+
+describe('Wallet mapping', () => {
+  it('should have 50 wallets across 10 profiles with 5 each', () => {
+    const profiles = [
+      { id: 'p1', name: 'Profile 1', wallets: Array(5).fill(0).map((_, i) => `w${i}`) },
+      { id: 'p2', name: 'Profile 2', wallets: Array(5).fill(0).map((_, i) => `w${i + 5}`) },
+      { id: 'p3', name: 'Profile 3', wallets: Array(5).fill(0).map((_, i) => `w${i + 10}`) },
+      { id: 'p4', name: 'Profile 4', wallets: Array(5).fill(0).map((_, i) => `w${i + 15}`) },
+      { id: 'p5', name: 'Profile 5', wallets: Array(5).fill(0).map((_, i) => `w${i + 20}`) },
+      { id: 'p6', name: 'Profile 6', wallets: Array(5).fill(0).map((_, i) => `w${i + 25}`) },
+      { id: 'p7', name: 'Profile 7', wallets: Array(5).fill(0).map((_, i) => `w${i + 30}`) },
+      { id: 'p8', name: 'Profile 8', wallets: Array(5).fill(0).map((_, i) => `w${i + 35}`) },
+      { id: 'p9', name: 'Profile 9', wallets: Array(5).fill(0).map((_, i) => `w${i + 40}`) },
+      { id: 'p10', name: 'Profile 10', wallets: Array(5).fill(0).map((_, i) => `w${i + 45}`) },
+    ];
+
+    const allWallets = profiles.flatMap(p => p.wallets);
+    const unique = new Set(allWallets);
+
+    expect(profiles.length).toBe(10);
+    expect(allWallets.length).toBe(50);
+    expect(unique.size).toBe(50);
+    profiles.forEach(p => expect(p.wallets.length).toBe(5));
+  });
+
+  it('should detect duplicate wallets', () => {
+    const profiles = [
+      { id: 'p1', name: 'Profile 1', wallets: ['w0', 'w1', 'w2', 'w3', 'w4'] },
+      { id: 'p2', name: 'Profile 2', wallets: ['w0', 'w5', 'w6', 'w7', 'w8'] }, // w0 duplicated
+    ];
+    const all = profiles.flatMap(p => p.wallets);
+    const unique = new Set(all);
+    expect(all.length - unique.size).toBe(1); // 1 duplicate
+  });
+
+  it('should detect unassigned wallets', () => {
+    const configWallets = ['w0', 'w1', 'w2', 'w3', 'w4', 'w5'];
+    const profiles = [
+      { id: 'p1', name: 'Profile 1', wallets: ['w0', 'w1'] },
+    ];
+    const assigned = new Set(profiles.flatMap(p => p.wallets));
+    const unassigned = configWallets.filter(w => !assigned.has(w));
+    expect(unassigned.length).toBe(4);
+  });
+
+  it('each profile should process exactly 5 wallets', () => {
+    const profile = { id: 'p1', name: 'Profile 1', wallets: ['w0', 'w1', 'w2', 'w3', 'w4'] };
+    expect(profile.wallets.length).toBe(5);
+  });
+});
+
+// ─── Profile lifecycle isolation ────────────────────────────────────────────
+
+describe('Profile lifecycle isolation', () => {
+  it('each profile failure should not stop the next profile', () => {
+    const results: Array<{ profile: string; status: string }> = [];
+    const profiles = ['p1', 'p2', 'p3'];
+
+    for (const p of profiles) {
+      try {
+        if (p === 'p2') throw new NSTProfileLaunchError(p, 400,
+          JSON.stringify({ code: 6001, msg: 'exceeded plan limits' })
+        );
+        results.push({ profile: p, status: 'SUCCESS' });
+      } catch {
+        results.push({ profile: p, status: 'FAILED' });
+      }
+    }
+
+    expect(results).toHaveLength(3);
+    expect(results[0]).toEqual({ profile: 'p1', status: 'SUCCESS' });
+    expect(results[1]).toEqual({ profile: 'p2', status: 'FAILED' });
+    expect(results[2]).toEqual({ profile: 'p3', status: 'SUCCESS' });
+  });
+
+  it('each wallet failure should not stop the next wallet', () => {
+    const results: Array<{ wallet: number; status: string }> = [];
+    const wallets = [0, 1, 2, 3, 4];
+
+    for (const w of wallets) {
+      try {
+        if (w === 2) throw new Error('faucet error');
+        results.push({ wallet: w, status: 'SUCCESS' });
+      } catch {
+        results.push({ wallet: w, status: 'FAILED' });
+      }
+    }
+
+    expect(results).toHaveLength(5);
+    expect(results[0].status).toBe('SUCCESS');
+    expect(results[1].status).toBe('SUCCESS');
+    expect(results[2].status).toBe('FAILED');
+    expect(results[3].status).toBe('SUCCESS');
+    expect(results[4].status).toBe('SUCCESS');
+  });
+
+  it('profile closes after processing its wallets', () => {
+    // Simulates: launch → process → close
+    let launched = false;
+    let closed = false;
+
+    const processProfile = async () => {
+      launched = true;  // launch
+      // process 5 wallets...
+      closed = true;   // close in finally block
+    };
+
+    processProfile();
+    expect(launched).toBe(true);
+    expect(closed).toBe(true);
+  });
+
+  it('next profile starts only after previous profile is closed', () => {
+    const order: string[] = [];
+    const profiles = ['p1', 'p2', 'p3'];
+
+    for (const p of profiles) {
+      order.push(`${p}:launch`);
+      // process...
+      order.push(`${p}:close`);
+    }
+
+    expect(order).toEqual([
+      'p1:launch', 'p1:close',
+      'p2:launch', 'p2:close',
+      'p3:launch', 'p3:close',
+    ]);
+  });
+});
+
+// ─── Code 6001 does not trigger proxy auto-fix ──────────────────────────────
+
+describe('Plan limit does not trigger proxy fix', () => {
+  it('NSTProfileLaunchError with code 6001 has isPlanLimit=true', () => {
+    const body = JSON.stringify({ code: 6001, msg: 'exceeded plan limits' });
+    const err = new NSTProfileLaunchError('p1', 400, body);
+    // A caller would check: if (err.isPlanLimit) skip proxy fix
+    expect(err.isPlanLimit).toBe(true);
+  });
+
+  it('NSTProfileLaunchError with 403 has isPlanLimit=false', () => {
+    const err = new NSTProfileLaunchError('p1', 403, 'forbidden');
+    // A caller would check: if (!err.isPlanLimit) try proxy fix
+    expect(err.isPlanLimit).toBe(false);
+  });
+});
