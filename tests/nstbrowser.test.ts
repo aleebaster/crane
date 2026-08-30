@@ -160,11 +160,14 @@ describe('createNSTProfile', () => {
 describe('launchNSTProfile', () => {
   it('should start browser and return WebSocket endpoint', async () => {
     mockFetch((url, init) => {
-      if (url.includes('/browsers/') && url.includes('/debugger')) {
-        return jsonResponse({ wsUrl: 'ws://127.0.0.1:9223/devtools/browser/abc' });
-      }
-      // POST /browsers/ to start
-      return jsonResponse({ id: 'browser-1', profileId: 'profile-1' });
+      // NST API v2: POST /browsers/{profileId} returns webSocketDebuggerUrl directly
+      return jsonResponse({
+        data: {
+          profileId: 'profile-1',
+          port: 9223,
+          webSocketDebuggerUrl: 'ws://127.0.0.1:9223/devtools/browser/abc',
+        },
+      });
     });
 
     const ws = await launchNSTProfile('profile-1');
@@ -212,12 +215,16 @@ describe('deleteNSTProfile', () => {
 
 describe('listNSTProfiles', () => {
   it('should return array of profiles', async () => {
+    // NST API v2 returns paginated: { data: { docs: [...], hasNextPage: false } }
     mockFetch(() =>
       jsonResponse({
-        profiles: [
-          { id: '1', name: 'wallet_abc', fingerprint: {} },
-          { id: '2', name: 'wallet_def', fingerprint: {} },
-        ],
+        data: {
+          docs: [
+            { profileId: '1', name: 'wallet_abc', parameters: { fingerprint: {} } },
+            { profileId: '2', name: 'wallet_def', parameters: { fingerprint: {} } },
+          ],
+          hasNextPage: false,
+        },
       })
     );
 
@@ -233,7 +240,7 @@ describe('listNSTProfiles', () => {
   });
 
   it('should handle empty response', async () => {
-    mockFetch(() => jsonResponse({}));
+    mockFetch(() => jsonResponse({ data: { docs: [], hasNextPage: false } }));
     const profiles = await listNSTProfiles();
     expect(profiles).toEqual([]);
   });

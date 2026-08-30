@@ -11,6 +11,9 @@
  * 5. CDP connection
  */
 
+import * as dotenv from 'dotenv';
+dotenv.config();
+
 const NST_API_BASE = 'http://localhost:8848/api/v2';
 const API_KEY = process.env.NST_API_KEY || '';
 
@@ -82,8 +85,9 @@ async function main() {
       console.log(`  Body: ${text}`);
       throw new Error(`List profiles returned ${res.status}`);
     }
-    const data = await res.json() as { profiles?: Array<{ id: string; name: string }> };
-    const profiles = data.profiles || [];
+    const raw = await res.json() as Record<string, unknown>;
+    const inner = (raw.data || raw) as Record<string, unknown>;
+    const profiles = ((inner.profiles || inner.list) || []) as Array<{ id: string; name: string }>;
     console.log(`  Found ${profiles.length} profiles:`);
     for (const p of profiles) {
       console.log(`    - ${p.id}: ${p.name}`);
@@ -137,8 +141,9 @@ async function main() {
       throw new Error(`Create profile returned ${res.status}: ${text}`);
     }
 
-    const data = JSON.parse(text);
-    testProfileId = data.profileId || data.id;
+    const raw = JSON.parse(text);
+    const inner = raw.data || raw;
+    testProfileId = inner.profileId || inner.id;
     console.log(`  Created profile ID: ${testProfileId}`);
   }));
 
@@ -146,14 +151,11 @@ async function main() {
   let browserId: string | null = null;
   if (testProfileId) {
     results.push(await step('4. Launch Test Profile', async () => {
-      const body = { profileId: testProfileId, headless: false };
-      console.log(`  POST ${NST_API_BASE}/browsers/`);
-      console.log(`  Body: ${JSON.stringify(body)}`);
+      console.log(`  POST ${NST_API_BASE}/browsers/${testProfileId}`);
 
-      const res = await fetch(`${NST_API_BASE}/browsers/`, {
+      const res = await fetch(`${NST_API_BASE}/browsers/${testProfileId}`, {
         method: 'POST',
         headers: headers(),
-        body: JSON.stringify(body),
       });
       console.log(`  Status: ${res.status} ${res.statusText}`);
 
@@ -164,18 +166,23 @@ async function main() {
         throw new Error(`Launch returned ${res.status}: ${text}`);
       }
 
-      const data = JSON.parse(text);
-      browserId = data.id;
+      const raw = JSON.parse(text);
+      const inner = raw.data || raw;
+      browserId = inner.id || inner.browserId;
       console.log(`  Browser ID: ${browserId}`);
     }));
   }
 
-  // Step 5: Get debugger endpoint
-  if (browserId) {
-    results.push(await step('5. Get Debugger Endpoint', async () => {
-      console.log(`  GET ${NST_API_BASE}/browsers/${browserId}/debugger`);
+  // Step 5: Get debugger endpoint (from launch response)
+  // The launch response already contains webSocketDebuggerUrl
+  // If not, try the debugger endpoint
+  if (testProfileId) {
+    results.push(await step('5. Verify Debugger Endpoint', async () => {
+      // The launch response should have webSocketDebuggerUrl
+      // Let's also try the dedicated debugger endpoint
+      console.log(`  GET ${NST_API_BASE}/browsers/${testProfileId}/debugger`);
 
-      const res = await fetch(`${NST_API_BASE}/browsers/${browserId}/debugger`, {
+      const res = await fetch(`${NST_API_BASE}/browsers/${testProfileId}/debugger`, {
         method: 'GET',
         headers: { 'x-api-key': API_KEY },
       });
@@ -188,8 +195,9 @@ async function main() {
         throw new Error(`Debugger returned ${res.status}: ${text}`);
       }
 
-      const data = JSON.parse(text);
-      const wsUrl = data.wsUrl || data.webSocketDebuggerUrl || data.url;
+      const raw = JSON.parse(text);
+      const inner = raw.data || raw;
+      const wsUrl = inner.wsUrl || inner.webSocketDebuggerUrl || inner.url || inner.webSocketUrl;
       console.log(`  WebSocket URL: ${wsUrl}`);
     }));
   }
