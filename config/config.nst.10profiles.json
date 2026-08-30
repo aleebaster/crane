@@ -1,0 +1,74 @@
+{
+  "wallets": [
+    "tb1qt976z56ssnzhs2a9kkfergn33xdhrp6zad8s0k",
+    "tb1q8kjsfan2vuntsu4g2h3c35g4zxq3hssye7nvpl",
+    "tb1qd7mwgjp29szuduc0zsp2gx538xemlhjnx3xmzc",
+    "tb1qrsvjtgz3c4t80yhdxtpn9na02kd5uhdxus7v60",
+    "tb1q4dzh63z5j0r0dk76zepc03t4wdu0ruk6vxph95",
+    "tb1qzlsfvw6v50mnrjlv6ek87tqyrunpsmh788w6se",
+    "tb1qa0pdlfd8md7c6gwcrcr377qmdlrdhlqc8yz7sa",
+    "tb1q5583vmpk486uhzlkfqqg7axum72phc4wewv7qv",
+    "tb1qamlmfzume0efp5dl9h2jamf2k0ax8plll8ksds",
+    "tb1q894cvmnxmyfd77dewhn45f30hmfmm4yvduvgc8"
+  ],
+  "browser": {
+    "userDataDir": "C:\\Users\\andre\\AppData\\Local\\Google\\Chrome\\User Data",
+    "profileDirectory": "Profile 2",
+    "headless": false,
+    "useNSTbrowser": true,
+    "createProfilesOnDemand": true,
+    "profileStrategy": "round_robin",
+    "fingerprintRotation": {
+      "enabled": true,
+      "rotationStrategy": "per_request",
+      "attemptsBeforeRotation": 3,
+      "maxFingerprints": 10
+    },
+    "nstProfiles": [
+      {
+        "id": "profile_1",
+        "name": "Profile 1",
+        "wallets": [
+          "tb1qt976z56ssnzhs2a9kkfergn33xdhrp6zad8s0k",
+          "tb1q8kjsfan2vuntsu4g2h3c35g4zxq3hssye7nvpl"
+        ]
+      },
+      {
+        "id": "profile_2",
+        "name": "Profile 2",
+        "wallets": [
+          "tb1qd7mwgjp29szuduc0zsp2gx538xemlhjnx3xmzc",
+          "tb1qrsvjtgz3c4t80yhdxtpn9na02kd5uhdxus7v60"
+        ]
+      },
+      {
+        "id": "profile_3",
+        "name": "Profile 3",
+        "wallets": [
+          "tb1q4dzh63z5j0r0dk76zepc03t4wdu0ruk6vxph95",
+          "tb1qzlsfvw6v50mnrjlv6ek87tqyrunpsmh788w6se"
+        ]
+      },
+      {
+        "id": "profile_4",
+        "name": "Profile 4",
+        "wallets": [
+          "tb1qa0pdlfd8md7c6gwcrcr377qmdlrdhlqc8yz7sa",
+          "tb1q5583vmpk486uhzlkfqqg7axum72phc4wewv7qv"
+        ]
+      },
+      {
+        "id": "profile_5",
+        "name": "Profile 5",
+        "wallets": [
+          "tb1qamlmfzume0efp5dl9h2jamf2k0ax8plll8ksds",
+          "tb1q894cvmnxmyfd77dewhn45f30hmfmm4yvduvgc8"
+        ]
+      }
+    ]
+  },
+  "faucet": {
+    "url": "https://signet257.bublina.eu.org/",
+    "walletTimeoutMs": 300000
+  }
+}

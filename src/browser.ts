@@ -9,7 +9,17 @@ import {
   closeNSTProfile,
   isNSTRunning,
   NSTBrowserLaunchResult,
+  NSTProfileManager,
+  NSTProfileMapping,
+  FingerprintRotator,
+  FingerprintRotationConfig,
+  ProfileStrategy,
+  launchNSTProfile,
+  connectToNSTProfile,
 } from './nstbrowser';
+import { ProfilePool } from './profile-pool';
+
+// ─── Config Types ───────────────────────────────────────────────────────────
 
 export interface BrowserConfig {
   userDataDir: string;
@@ -18,6 +28,9 @@ export interface BrowserConfig {
   chromePath?: string;
   useNSTbrowser?: boolean;
   createProfilesOnDemand?: boolean;
+  profileStrategy?: ProfileStrategy;
+  nstProfiles?: NSTProfileMapping[];
+  fingerprintRotation?: Partial<FingerprintRotationConfig>;
 }
 
 export interface BrowserLaunchResult {
@@ -30,6 +43,11 @@ export interface BrowserLaunchResult {
 // ─── Active NST state ───────────────────────────────────────────────────────
 
 let activeNSTProfileId: string | null = null;
+let profileManager: NSTProfileManager | null = null;
+let fingerprintRotator: FingerprintRotator | null = null;
+let profilePool: ProfilePool | null = null;
+
+// ─── Chrome helpers (unchanged) ─────────────────────────────────────────────
 
 function findChromePath(): string | undefined {
   const { platform } = process;
@@ -158,7 +176,7 @@ async function launchChromeCDP(config: BrowserConfig): Promise<BrowserLaunchResu
   return { browser, context, page };
 }
 
-// ─── NSTbrowser Launch (new) ────────────────────────────────────────────────
+// ─── NSTbrowser Launch (with profile management) ────────────────────────────
 
 async function launchNSTbrowser(config: BrowserConfig): Promise<BrowserLaunchResult> {
   log('NSTbrowser mode enabled');
@@ -167,6 +185,22 @@ async function launchNSTbrowser(config: BrowserConfig): Promise<BrowserLaunchRes
   if (!nstRunning) {
     log('Starting NSTbrowser...');
     await ensureNSTRunning();
+  }
+
+  // Initialize profile manager if configured
+  if (config.nstProfiles && config.nstProfiles.length > 0) {
+    const strategy = config.profileStrategy || 'round_robin';
+    profileManager = new NSTProfileManager(config.nstProfiles, strategy);
+    log(`[NST] ProfileManager: ${profileManager.profileCount} profiles, strategy=${strategy}`);
+
+    // Initialize profile pool
+    const profileIds = config.nstProfiles.map((p) => p.id);
+    profilePool = new ProfilePool(profileIds);
+    log(`[NST] ProfilePool: ${profilePool.totalCount} profiles`);
+
+    // Initialize fingerprint rotator
+    fingerprintRotator = new FingerprintRotator(config.fingerprintRotation);
+    log(`[NST] FingerprintRotator: pool=${fingerprintRotator.poolSize}`);
   }
 
   // Use a dummy address for initial launch; actual wallet address used later
@@ -191,6 +225,88 @@ export async function launchBrowser(config: BrowserConfig): Promise<BrowserLaunc
   return launchChromeCDP(config);
 }
 
+/**
+ * Launch a specific wallet's NST profile with fingerprint rotation.
+ * Use this for per-wallet processing in multi-profile mode.
+ */
+export async function launchWalletProfile(
+  address: string
+): Promise<NSTBrowserLaunchResult | null> {
+  if (!profileManager || !fingerprintRotator || !profilePool) {
+    return null;
+  }
+
+  const profileId = profileManager.getProfileForWallet(address);
+  if (!profileId) {
+    log(`[NST] No profile found for ${address.substring(0, 10)}...`);
+    return null;
+  }
+
+  // Acquire from pool (waits if all busy)
+  const acquired = profilePool.acquireProfile(profileId, address);
+  if (!acquired) {
+    log(`[NST] Profile ${profileId} is busy, waiting...`);
+    const available = await profilePool.waitForAvailable(30000);
+    if (!available) {
+      log('[NST] No profiles available after timeout');
+      return null;
+    }
+    profilePool.acquireProfile(available, address);
+  }
+
+  // Get rotated fingerprint
+  const fingerprint = fingerprintRotator.getNextFingerprint(profileId);
+  log(`[NST] Using fingerprint for ${profileId}: ${fingerprint.userAgent?.substring(0, 50)}...`);
+
+  // Launch profile
+  const wsEndpoint = await launchNSTProfile(profileId);
+  const browser = await connectToNSTProfile(wsEndpoint);
+
+  const contexts = browser.contexts();
+  const context = contexts.length > 0 ? contexts[0] : await browser.newContext();
+
+  const pages = context.pages();
+  const page =
+    pages.length > 0 && !pages[0].isClosed()
+      ? pages[0]
+      : await context.newPage();
+
+  return { browser, context, page, profileId };
+}
+
+/**
+ * Release a wallet profile back to the pool.
+ */
+export function releaseWalletProfile(profileId: string): void {
+  if (profilePool) {
+    profilePool.releaseProfile(profileId);
+  }
+  if (profileManager) {
+    profileManager.markProfileUsed(profileId);
+  }
+}
+
+/**
+ * Get the profile manager instance.
+ */
+export function getProfileManager(): NSTProfileManager | null {
+  return profileManager;
+}
+
+/**
+ * Get the fingerprint rotator instance.
+ */
+export function getFingerprintRotator(): FingerprintRotator | null {
+  return fingerprintRotator;
+}
+
+/**
+ * Get the profile pool instance.
+ */
+export function getProfilePool(): ProfilePool | null {
+  return profilePool;
+}
+
 export async function closeBrowser(
   browser: Browser | null,
   _config?: BrowserConfig
@@ -199,6 +315,9 @@ export async function closeBrowser(
     if (activeNSTProfileId) {
       await closeNSTProfile(activeNSTProfileId);
       activeNSTProfileId = null;
+    }
+    if (profilePool) {
+      profilePool.resetAll();
     }
     if (browser) {
       await browser.close();
@@ -218,4 +337,7 @@ export async function checkNSTStatus(): Promise<boolean> {
 
 export function resetActiveNSTProfile(): void {
   activeNSTProfileId = null;
+  profileManager = null;
+  fingerprintRotator = null;
+  profilePool = null;
 }

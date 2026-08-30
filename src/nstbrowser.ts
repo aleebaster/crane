@@ -66,6 +66,35 @@ export interface NSTBrowserLaunchResult {
   profileId: string;
 }
 
+// ─── Profile Manager Types ──────────────────────────────────────────────────
+
+export type ProfileStrategy = 'round_robin' | 'least_used' | 'dedicated';
+
+export interface NSTProfileMapping {
+  id: string;
+  name: string;
+  wallets: string[];
+}
+
+export interface NSTDistribution {
+  profileId: string;
+  walletAddresses: string[];
+  currentIndex: number;
+  lastUsed: Date;
+  requestCount: number;
+}
+
+// ─── Fingerprint Rotation Types ─────────────────────────────────────────────
+
+export type RotationStrategy = 'per_request' | 'after_attempts' | 'never';
+
+export interface FingerprintRotationConfig {
+  enabled: boolean;
+  rotationStrategy: RotationStrategy;
+  attemptsBeforeRotation: number;
+  maxFingerprints: number;
+}
+
 // ─── NST Status ─────────────────────────────────────────────────────────────
 
 /**
@@ -185,7 +214,6 @@ export async function createNSTProfile(config: NSTProfileConfig): Promise<string
  * API: POST /api/v2/browsers/
  */
 export async function launchNSTProfile(profileId: string): Promise<string> {
-  // First, start the browser via the Browsers API
   const startRes = await fetch(`${NST_API_BASE}/browsers/`, {
     method: 'POST',
     headers: authHeaders(),
@@ -205,7 +233,6 @@ export async function launchNSTProfile(profileId: string): Promise<string> {
 
   log(`NST browser started: ${browserId}`);
 
-  // Get the debugger WebSocket URL
   const debugRes = await fetch(`${NST_API_BASE}/browsers/${browserId}/debugger`, {
     method: 'GET',
     headers: { 'x-api-key': getApiKey() },
@@ -225,11 +252,9 @@ export async function launchNSTProfile(profileId: string): Promise<string> {
 
 /**
  * Close a running browser instance.
- * API: DELETE /api/v2/browsers/{id}
  */
 export async function closeNSTProfile(profileId: string): Promise<void> {
   try {
-    // Find the browser by profile ID and close it
     const listRes = await fetch(`${NST_API_BASE}/browsers`, {
       method: 'GET',
       headers: { 'x-api-key': getApiKey() },
@@ -256,7 +281,6 @@ export async function closeNSTProfile(profileId: string): Promise<void> {
 
 /**
  * Delete a profile permanently.
- * API: DELETE /api/v2/profiles/{id}
  */
 export async function deleteNSTProfile(profileId: string): Promise<void> {
   try {
@@ -274,7 +298,6 @@ export async function deleteNSTProfile(profileId: string): Promise<void> {
 
 /**
  * List all profiles in NSTbrowser.
- * API: GET /api/v2/profiles
  */
 export async function listNSTProfiles(): Promise<NSTProfile[]> {
   try {
@@ -314,7 +337,6 @@ export async function launchProfileForWallet(
 ): Promise<NSTBrowserLaunchResult> {
   await ensureNSTRunning();
 
-  // Look for existing profile by address prefix
   const profiles = await listNSTProfiles();
   const shortAddr = address.substring(0, 10);
   const existing = profiles.find((p) => p.name.includes(shortAddr));
@@ -335,17 +357,12 @@ export async function launchProfileForWallet(
     throw new Error(`No NST profile found for address starting with ${shortAddr}`);
   }
 
-  // Launch the profile
   const wsEndpoint = await launchNSTProfile(profileId);
-
-  // Connect via CDP
   const browser = await connectToNSTProfile(wsEndpoint);
 
-  // Get or create context
   const contexts = browser.contexts();
   const context = contexts.length > 0 ? contexts[0] : await browser.newContext();
 
-  // Get or create page
   const pages = context.pages();
   const page =
     pages.length > 0 && !pages[0].isClosed()
@@ -355,42 +372,282 @@ export async function launchProfileForWallet(
   return { browser, context, page, profileId };
 }
 
-// ─── Fingerprint Generation ─────────────────────────────────────────────────
+// ─── NSTProfileManager ──────────────────────────────────────────────────────
+
+/**
+ * Manages distribution of wallets across NSTbrowser profiles.
+ * Supports round_robin, least_used, and dedicated strategies.
+ */
+export class NSTProfileManager {
+  private profiles: NSTDistribution[] = [];
+  private strategy: ProfileStrategy;
+
+  constructor(profileConfigs: NSTProfileMapping[], strategy: ProfileStrategy = 'round_robin') {
+    this.strategy = strategy;
+    this.profiles = profileConfigs.map((p) => ({
+      profileId: p.id,
+      walletAddresses: p.wallets,
+      currentIndex: 0,
+      lastUsed: new Date(0),
+      requestCount: 0,
+    }));
+
+    log(`[NST] ProfileManager initialized: ${this.profiles.length} profiles, strategy=${strategy}`);
+  }
+
+  /**
+   * Get the NST profile ID for a given wallet address.
+   * Returns null if no mapping found and no fallback available.
+   */
+  getProfileForWallet(address: string): string | null {
+    // Direct mapping: check if address is assigned to a profile
+    for (const profile of this.profiles) {
+      if (profile.walletAddresses.includes(address)) {
+        return profile.profileId;
+      }
+    }
+
+    // No direct mapping — use strategy fallback
+    return this.getNextAvailableProfile();
+  }
+
+  /**
+   * Mark a profile as used after a request completes.
+   */
+  markProfileUsed(profileId: string): void {
+    const profile = this.profiles.find((p) => p.profileId === profileId);
+    if (profile) {
+      profile.requestCount++;
+      profile.lastUsed = new Date();
+    }
+  }
+
+  /**
+   * Check if a profile exists and is usable.
+   */
+  isProfileAvailable(profileId: string): boolean {
+    return this.profiles.some((p) => p.profileId === profileId);
+  }
+
+  /**
+   * Get stats for all profiles.
+   */
+  getStats(): Array<{ profileId: string; wallets: number; requests: number; lastUsed: Date }> {
+    return this.profiles.map((p) => ({
+      profileId: p.profileId,
+      wallets: p.walletAddresses.length,
+      requests: p.requestCount,
+      lastUsed: p.lastUsed,
+    }));
+  }
+
+  /**
+   * Get all wallet addresses across all profiles.
+   */
+  getAllWallets(): string[] {
+    return this.profiles.flatMap((p) => p.walletAddresses);
+  }
+
+  /**
+   * Get the number of managed profiles.
+   */
+  get profileCount(): number {
+    return this.profiles.length;
+  }
+
+  private getNextAvailableProfile(): string | null {
+    if (this.profiles.length === 0) return null;
+
+    switch (this.strategy) {
+      case 'round_robin':
+        return this.roundRobin();
+      case 'least_used':
+        return this.leastUsed();
+      case 'dedicated':
+        return this.getLeastLoaded();
+      default:
+        return this.roundRobin();
+    }
+  }
+
+  private roundRobin(): string {
+    const sorted = [...this.profiles].sort((a, b) => a.requestCount - b.requestCount);
+    const selected = sorted[0];
+    return selected.profileId;
+  }
+
+  private leastUsed(): string {
+    const sorted = [...this.profiles].sort((a, b) => a.requestCount - b.requestCount);
+    return sorted[0].profileId;
+  }
+
+  private getLeastLoaded(): string {
+    const sorted = [...this.profiles].sort(
+      (a, b) => a.walletAddresses.length - b.walletAddresses.length
+    );
+    return sorted[0].profileId;
+  }
+}
+
+// ─── FingerprintRotator ─────────────────────────────────────────────────────
+
+/**
+ * Generates and rotates browser fingerprints across profiles.
+ * Supports per-request, after-attempts, and never rotation strategies.
+ */
+export class FingerprintRotator {
+  private currentIndex = 0;
+  private fingerprints: Array<Partial<NSTFingerprint>> = [];
+  private config: FingerprintRotationConfig;
+  private profileUsage: Map<string, number> = new Map();
+
+  constructor(config?: Partial<FingerprintRotationConfig>) {
+    this.config = {
+      enabled: true,
+      rotationStrategy: 'per_request',
+      attemptsBeforeRotation: 3,
+      maxFingerprints: 10,
+      ...config,
+    };
+    this.generateFingerprintPool();
+    log(`[NST] FingerprintRotator: strategy=${this.config.rotationStrategy}, pool=${this.fingerprints.length}`);
+  }
+
+  /**
+   * Get the next fingerprint for a given profile.
+   */
+  getNextFingerprint(profileId: string): Partial<NSTFingerprint> {
+    if (!this.config.enabled || this.config.rotationStrategy === 'never') {
+      return this.fingerprints[0];
+    }
+
+    const attempts = this.profileUsage.get(profileId) || 0;
+    let shouldRotate = false;
+
+    switch (this.config.rotationStrategy) {
+      case 'per_request':
+        shouldRotate = true;
+        break;
+      case 'after_attempts':
+        shouldRotate = attempts >= this.config.attemptsBeforeRotation;
+        break;
+    }
+
+    if (shouldRotate) {
+      this.currentIndex = (this.currentIndex + 1) % this.fingerprints.length;
+    }
+
+    this.profileUsage.set(profileId, attempts + 1);
+    return this.fingerprints[this.currentIndex];
+  }
+
+  /**
+   * Reset usage counter for a profile.
+   */
+  resetProfileUsage(profileId: string): void {
+    this.profileUsage.set(profileId, 0);
+  }
+
+  /**
+   * Get the current fingerprint pool size.
+   */
+  get poolSize(): number {
+    return this.fingerprints.length;
+  }
+
+  private generateFingerprintPool(): void {
+    const generators = [
+      this.generateWindowsFingerprint,
+      this.generateMacFingerprint,
+      this.generateLinuxFingerprint,
+    ];
+
+    for (let i = 0; i < this.config.maxFingerprints; i++) {
+      const generator = generators[i % generators.length];
+      this.fingerprints.push(generator());
+    }
+  }
+
+  private generateWindowsFingerprint(): Partial<NSTFingerprint> {
+    const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
+
+    return {
+      userAgent: pick([
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0',
+      ]),
+      platform: 'Win32',
+      language: pick(['en-US', 'en-GB', 'fr-FR', 'de-DE']),
+      timezone: pick(['America/New_York', 'America/Los_Angeles', 'Europe/London', 'Europe/Paris']),
+      screenResolution: pick(['1920x1080', '1366x768', '1536x864', '1440x900']),
+      webglVendor: 'Google Inc. (Intel)',
+      webglRenderer: 'ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00005917) Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    };
+  }
+
+  private generateMacFingerprint(): Partial<NSTFingerprint> {
+    const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
+
+    return {
+      userAgent: pick([
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+      ]),
+      platform: 'MacIntel',
+      language: pick(['en-US', 'en-GB', 'ja-JP']),
+      timezone: pick(['America/New_York', 'America/Los_Angeles', 'Europe/London', 'Asia/Tokyo']),
+      screenResolution: pick(['1920x1080', '1440x900', '1680x1050']),
+      webglVendor: 'Google Inc. (Apple)',
+      webglRenderer: 'ANGLE (Apple, Apple M1, OpenGL 4.1)',
+    };
+  }
+
+  private generateLinuxFingerprint(): Partial<NSTFingerprint> {
+    const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
+
+    return {
+      userAgent: pick([
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+      ]),
+      platform: 'Linux x86_64',
+      language: pick(['en-US', 'en-GB', 'de-DE']),
+      timezone: pick(['Europe/London', 'Europe/Paris', 'America/New_York']),
+      screenResolution: pick(['1920x1080', '1366x768', '1600x900']),
+      webglVendor: 'Google Inc. (Intel)',
+      webglRenderer: 'ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00005917) Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    };
+  }
+}
+
+// ─── Fingerprint Generation (standalone) ────────────────────────────────────
 
 /**
  * Generate a random fingerprint for a new profile.
  */
 export function generateUniqueFingerprint(): Partial<NSTFingerprint> {
-  const userAgents = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0',
-  ];
-
-  const timezones = [
-    'America/New_York',
-    'America/Los_Angeles',
-    'Europe/London',
-    'Europe/Paris',
-    'Asia/Tokyo',
-    'Australia/Sydney',
-  ];
-
-  const languages = [
-    'en-US',
-    'en-GB',
-    'fr-FR',
-    'de-DE',
-    'es-ES',
-  ];
-
   const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
 
   return {
-    userAgent: pick(userAgents),
-    timezone: pick(timezones),
-    language: pick(languages),
+    userAgent: pick([
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0',
+    ]),
+    timezone: pick([
+      'America/New_York',
+      'America/Los_Angeles',
+      'Europe/London',
+      'Europe/Paris',
+      'Asia/Tokyo',
+      'Australia/Sydney',
+    ]),
+    language: pick(['en-US', 'en-GB', 'fr-FR', 'de-DE', 'es-ES']),
     screenResolution: '1920x1080',
   };
 }
