@@ -217,6 +217,11 @@ interface ProfileValidationResult {
   errorMessage?: string;
 }
 
+interface ValidationResult {
+  launchable: NSTProfileMapping[];
+  results: ProfileValidationResult[];
+}
+
 /**
  * Detect the public IP of a launched profile by navigating to an IP detection service.
  */
@@ -237,7 +242,7 @@ async function detectProfileIP(page: Page): Promise<string> {
   return 'unknown';
 }
 
-async function validateProfiles(profiles: NSTProfileMapping[]): Promise<NSTProfileMapping[]> {
+async function validateProfiles(profiles: NSTProfileMapping[]): Promise<ValidationResult> {
   console.log('\n============================================================');
   console.log('NST PROFILE VALIDATION');
   console.log('============================================================');
@@ -269,14 +274,19 @@ async function validateProfiles(profiles: NSTProfileMapping[]): Promise<NSTProfi
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (error instanceof NSTProfileLaunchError) {
-        console.log(`FAILED (HTTP ${error.httpStatus})`);
-        results.push({ profile, launchable: false, errorMessage: `HTTP ${error.httpStatus}` });
+        if (error.isPlanLimit) {
+          console.log(`FAILED (plan limit, code ${error.nstCode})`);
+          results.push({ profile, launchable: false, errorMessage: `NSTbrowser plan limit exceeded (code ${error.nstCode})` });
+        } else if (error.httpStatus === 403) {
+          console.log(`FAILED (HTTP 403 — proxy configuration error)`);
+          results.push({ profile, launchable: false, errorMessage: 'HTTP 403 — proxy configuration error' });
+        } else {
+          console.log(`FAILED (HTTP ${error.httpStatus})`);
+          results.push({ profile, launchable: false, errorMessage: `HTTP ${error.httpStatus}` });
+        }
       } else if (msg.includes('403')) {
-        console.log('FAILED (403)');
-        results.push({ profile, launchable: false, errorMessage: '403' });
-      } else if (msg.includes('plan limits')) {
-        console.log('FAILED (plan limits)');
-        results.push({ profile, launchable: false, errorMessage: 'NSTbrowser plan limit exceeded' });
+        console.log('FAILED (403 — proxy configuration error)');
+        results.push({ profile, launchable: false, errorMessage: '403 — proxy configuration error' });
       } else {
         console.log(`FAILED (${msg.substring(0, 60)})`);
         results.push({ profile, launchable: false, errorMessage: msg.substring(0, 100) });
@@ -313,7 +323,7 @@ async function validateProfiles(profiles: NSTProfileMapping[]): Promise<NSTProfi
 
   console.log('============================================================\n');
 
-  return launchable;
+  return { launchable, results };
 }
 
 // ─── Navigation ──────────────────────────────────────────────────────────
@@ -578,17 +588,40 @@ export async function run(configPath: string = 'config/config.json'): Promise<vo
       logWalletMapping(profiles);
 
       // Auto-fix broken proxy configs before validation
+      // Skip if proxy is not configured (plan-limit errors don't need proxy fix)
+      let proxyFixed = false;
       if (config.browser.proxy?.enabled) {
         const proxyUrl = `http://${config.browser.proxy.username}:${config.browser.proxy.password}@${config.browser.proxy.host}:${config.browser.proxy.port}`;
-        await fixBrokenProfiles(profiles, proxyUrl);
+        // Quick check: if ALL profiles return 6001, don't waste time fixing proxy
+        const quickCheck = await launchNSTProfile(profiles[0].id).catch(e => e);
+        if (quickCheck instanceof NSTProfileLaunchError && quickCheck.isPlanLimit) {
+          console.log('\n⚠️  NSTbrowser plan limit detected — skipping proxy auto-fix (not the cause).');
+        } else {
+          await fixBrokenProfiles(profiles, proxyUrl);
+          proxyFixed = true;
+        }
       }
 
       // Validate all profiles can launch
-      const launchableProfiles = await validateProfiles(profiles);
+      const validation = await validateProfiles(profiles);
+      const launchableProfiles = validation.launchable;
 
       if (launchableProfiles.length === 0) {
-        console.log('\n❌ No profiles could be launched. Fix proxy config in NSTbrowser and try again.');
-        console.log('For each broken profile: profile settings → Proxy → set to "No proxy" or fix proxy group.\n');
+        const hasPlanLimit = validation.results.some(r => r.errorMessage?.includes('plan limit'));
+        const hasProxyError = validation.results.some(r => r.errorMessage?.includes('403') || r.errorMessage?.includes('proxy'));
+        console.log('');
+        if (hasPlanLimit && !hasProxyError) {
+          console.log('❌ No profiles could be launched.');
+          console.log('   Reason: NSTbrowser plan limit exceeded (code 6001).');
+          console.log('   This is NOT a proxy configuration failure.');
+          console.log('   The NSTbrowser account has reached its launch quota.');
+          console.log('   Wait for the plan limit to reset or upgrade the NSTbrowser plan.\n');
+        } else if (hasProxyError) {
+          console.log('❌ No profiles could be launched due to proxy configuration errors.');
+          console.log('   For each broken profile: profile settings → Proxy → fix the proxy URL.\n');
+        } else {
+          console.log('❌ No profiles could be launched.\n');
+        }
         return;
       }
 

@@ -260,8 +260,11 @@ export async function launchNSTProfile(profileId: string, _proxy?: ProxyConfig):
         log(`[NST] Launch error body: ${text}`);
 
         const err = new NSTProfileLaunchError(profileId, startRes.status, text);
+        if (err.isPlanLimit) {
+          log(`[NST] Plan limit reached for ${profileId} (code 6001) — skipping`);
+          throw err;
+        }
         if (err.isPermanent) {
-          // 403/400 = broken config, retries won't help
           throw err;
         }
         lastError = err;
@@ -608,10 +611,24 @@ const LAUNCH_MAX_RETRIES = 3;
 const LAUNCH_RETRY_DELAYS_MS = [2000, 5000, 10000];
 
 /**
+ * Error classification for NSTbrowser launch failures.
+ * - PLAN_LIMIT: account exceeded launch quota (code 6001). Permanent.
+ * - PROXY_ERROR: broken proxy configuration (403 with proxy body). Permanent.
+ * - PERMANENT: other permanent failures (400 without proxy body, etc.).
+ * - TRANSIENT: temporary errors worth retrying (5xx, network, etc.).
+ */
+export type NSTErrorReason = 'PLAN_LIMIT' | 'PROXY_ERROR' | 'PERMANENT' | 'TRANSIENT';
+
+/**
  * Error thrown when an NSTbrowser profile fails to launch.
- * Includes HTTP status code for classification (403 = broken proxy config).
+ * Parses the API response body to extract NST error codes.
  */
 export class NSTProfileLaunchError extends Error {
+  /** NST API error code (e.g. 6001 for plan limit). 0 if not present. */
+  public readonly nstCode: number;
+  /** Classified reason for the failure. */
+  public readonly reason: NSTErrorReason;
+
   constructor(
     public readonly profileId: string,
     public readonly httpStatus: number,
@@ -619,11 +636,40 @@ export class NSTProfileLaunchError extends Error {
   ) {
     super(`Profile ${profileId} launch failed: HTTP ${httpStatus} — ${apiMessage}`);
     this.name = 'NSTProfileLaunchError';
+
+    // Parse NST error code from response body
+    this.nstCode = this.parseNstCode(apiMessage);
+    this.reason = this.classifyReason();
   }
 
+  /** Whether retries would help. */
   get isPermanent(): boolean {
-    // 403 = broken proxy config, won't resolve with retries
-    return this.httpStatus === 403 || this.httpStatus === 400;
+    return this.reason !== 'TRANSIENT';
+  }
+
+  /** Whether this is a plan-limit error (code 6001). */
+  get isPlanLimit(): boolean {
+    return this.nstCode === 6001;
+  }
+
+  private parseNstCode(body: string): number {
+    try {
+      const parsed = JSON.parse(body);
+      return parsed?.code || 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  private classifyReason(): NSTErrorReason {
+    // Code 6001 = plan limit (permanent, not retryable)
+    if (this.nstCode === 6001) return 'PLAN_LIMIT';
+    // 403 = proxy configuration error (permanent)
+    if (this.httpStatus === 403) return 'PROXY_ERROR';
+    // Other 4xx = permanent
+    if (this.httpStatus >= 400 && this.httpStatus < 500) return 'PERMANENT';
+    // 5xx or network = transient
+    return 'TRANSIENT';
   }
 }
 

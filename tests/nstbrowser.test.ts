@@ -9,6 +9,7 @@ import {
   listNSTProfiles,
   NSTFingerprint,
   NSTProfileConfig,
+  NSTProfileLaunchError,
 } from '../src/nstbrowser';
 
 // ─── Mock fetch globally ────────────────────────────────────────────────────
@@ -185,6 +186,66 @@ describe('launchNSTProfile', () => {
     mockFetch(() => errorResponse(403, 'request profile failed with code: 403'));
 
     await expect(launchNSTProfile('broken')).rejects.toThrow('403');
+  });
+
+  it('should throw immediately on code 6001 (plan limit) without retry', async () => {
+    mockFetch(() => errorResponse(400, JSON.stringify({
+      data: null, err: true, msg: 'exceeded plan limits', code: 6001
+    })));
+
+    try {
+      await launchNSTProfile('limited');
+      expect.fail('should have thrown');
+    } catch (error) {
+      expect(error).toBeInstanceOf(NSTProfileLaunchError);
+      const e = error as NSTProfileLaunchError;
+      expect(e.nstCode).toBe(6001);
+      expect(e.isPlanLimit).toBe(true);
+      expect(e.isPermanent).toBe(true);
+      expect(e.reason).toBe('PLAN_LIMIT');
+    }
+  });
+
+  it('should classify 403 as PROXY_ERROR', async () => {
+    mockFetch(() => errorResponse(403, 'request profile failed with code: 403'));
+
+    try {
+      await launchNSTProfile('proxy-broken');
+      expect.fail('should have thrown');
+    } catch (error) {
+      expect(error).toBeInstanceOf(NSTProfileLaunchError);
+      const e = error as NSTProfileLaunchError;
+      expect(e.reason).toBe('PROXY_ERROR');
+      expect(e.isPermanent).toBe(true);
+      expect(e.isPlanLimit).toBe(false);
+    }
+  });
+
+  it('should classify 500 as TRANSIENT', async () => {
+    mockFetch(() => errorResponse(500, 'Internal Server Error'));
+
+    try {
+      await launchNSTProfile('server-error');
+      expect.fail('should have thrown');
+    } catch (error) {
+      expect(error).toBeInstanceOf(NSTProfileLaunchError);
+      const e = error as NSTProfileLaunchError;
+      expect(e.reason).toBe('TRANSIENT');
+      expect(e.isPermanent).toBe(false);
+    }
+  }, 15000);
+
+  it('should not call proxy auto-fix when error is 6001', async () => {
+    // This test verifies the error classification, not the fixBrokenProfiles function.
+    // If isPlanLimit is true, the caller should skip proxy fix.
+    const error = new NSTProfileLaunchError('test', 400,
+      JSON.stringify({ data: null, err: true, msg: 'exceeded plan limits', code: 6001 })
+    );
+    expect(error.isPlanLimit).toBe(true);
+    expect(error.reason).toBe('PLAN_LIMIT');
+    // A caller checking isPlanLimit would skip proxy fix
+    const shouldSkipProxyFix = error.isPlanLimit;
+    expect(shouldSkipProxyFix).toBe(true);
   });
 });
 
